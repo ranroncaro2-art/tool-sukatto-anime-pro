@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: 240 10% 2%;
+    --foreground: 0 0% 100%;
+    --card: 240 10% 4%;
+    --card-foreground: 0 0% 100%;
+    --popover: 240 10% 4%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 250 100% 70%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 15%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 240 5% 20%;
+    --muted-foreground: 240 5% 75%;
+    --accent: 250 100% 70%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 85% 65%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 5% 30%;
+    --input: 240 5% 30%;
+    --ring: 250 100% 70%;
+    --radius: 0.75rem;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-50 font-sans selection:bg-indigo-500/30 selection:text-white antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', sans-serif;
+  }
+
+  code, pre {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-black/60 backdrop-blur-2xl border border-white/20 shadow-[0_8px_32px_0_rgba(0,0,0,0.6)];
+  }
+  
+  .glass-card {
+    @apply bg-white/[0.03] backdrop-blur-md border border-white/15 hover:border-white/30 transition-all duration-500 shadow-lg;
+  }
+
+  .glow-indigo {
+    @apply shadow-[0_0_30px_rgba(99,102,241,0.3)];
+  }
+
+  .glow-text {
+    @apply [text-shadow:0_0_15px_rgba(255,255,255,0.3)];
+  }
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes kenburns {
+  0% {
+    transform: scale(1.0) translate(0, 0);
+  }
+  100% {
+    transform: scale(1.05) translate(-1%, -0.5%);
+  }
+}
+
+.animate-kenburns {
+  animation: kenburns var(--kenburns-duration, 5s) linear infinite alternate;
+}
+
