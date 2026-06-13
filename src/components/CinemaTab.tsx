@@ -272,6 +272,9 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
         if (parsed.bottomMargin === undefined) {
           parsed.bottomMargin = 24;
         }
+        if (parsed.bgColor === undefined) {
+          parsed.bgColor = "#000000";
+        }
         return parsed;
       } catch (e) {}
     }
@@ -287,7 +290,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       maxWordsLimit: 7,
       bgFullWidth: false,
       bgHeight: 80,
-      bottomMargin: 24
+      bottomMargin: 24,
+      bgColor: "#000000"
     };
   });
 
@@ -1739,21 +1743,47 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                     positionStyle.top = 'auto';
                   }
 
+                  const hexToRgba = (hex: string, opacity: number) => {
+                    if (!hex) return `rgba(0,0,0,${opacity})`;
+                    const cleaned = hex.replace('#', '');
+                    const r = parseInt(cleaned.substring(0, 2), 16);
+                    const g = parseInt(cleaned.substring(2, 4), 16);
+                    const b = parseInt(cleaned.substring(4, 6), 16);
+                    return `rgba(${r},${g},${b},${opacity})`;
+                  };
+
                   if (isFullWidth) {
+                    const fullWidthBoxStyle: React.CSSProperties = {
+                      left: 0,
+                      right: 0,
+                      width: '100%',
+                      height: `${bgHeightVal}px`,
+                      backgroundColor: bgOpacityVal > 0 ? hexToRgba(subtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      position: 'absolute',
+                      pointerEvents: 'none',
+                      userSelect: 'none',
+                      zIndex: 10,
+                    };
+
+                    if (subtitleStyle.verticalAlign === 'top') {
+                      fullWidthBoxStyle.top = 0;
+                      fullWidthBoxStyle.bottom = 'auto';
+                    } else if (subtitleStyle.verticalAlign === 'center') {
+                      fullWidthBoxStyle.top = '50%';
+                      fullWidthBoxStyle.bottom = 'auto';
+                      fullWidthBoxStyle.transform = 'translateY(-50%)';
+                    } else {
+                      fullWidthBoxStyle.bottom = 0;
+                      fullWidthBoxStyle.top = 'auto';
+                    }
+
                     return (
                       <div 
-                        style={{
-                          left: 0,
-                          right: 0,
-                          width: '100%',
-                          height: `${bgHeightVal}px`,
-                          backgroundColor: bgOpacityVal > 0 ? `rgba(0,0,0,${bgOpacityVal})` : 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          ...positionStyle
-                        }}
-                        className="absolute pointer-events-none select-none z-10 animate-fade-in"
+                        style={fullWidthBoxStyle}
+                        className="animate-fade-in"
                       >
                         <span 
                           style={{
@@ -1791,7 +1821,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                             color: subtitleStyle.textColor,
                             fontFamily: getCssFontFamily(subtitleStyle.fontFamily),
                             fontSize: `${subtitleStyle.fontSize * 0.8}px`,
-                            backgroundColor: bgOpacityVal > 0 ? `rgba(0,0,0,${bgOpacityVal})` : 'transparent',
+                            backgroundColor: bgOpacityVal > 0 ? hexToRgba(subtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
                             textShadow: subtitleStyle.outlineWidth > 0 ? `
                               -${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},  
                                ${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
@@ -2069,7 +2099,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   />
                 </div>
 
-                <div className="grid grid-cols-3 gap-2.5 mt-1">
+                <div className="grid grid-cols-4 gap-2 mt-1">
                   <div className="flex flex-col gap-1">
                     <label className="text-[8px] font-mono text-zinc-500 font-bold uppercase">Màu chữ:</label>
                     <div className="flex items-center gap-1">
@@ -2097,8 +2127,21 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   </div>
 
                   <div className="flex flex-col gap-1">
+                    <label className="text-[8px] font-mono text-zinc-500 font-bold uppercase">Màu nền:</label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="color"
+                        value={subtitleStyle.bgColor || "#000000"}
+                        onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bgColor: e.target.value })}
+                        className="w-6 h-6 rounded border border-white/10 bg-transparent cursor-pointer"
+                      />
+                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{subtitleStyle.bgColor || "#000000"}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-1">
                     <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
-                      <span>Độ dày viền:</span>
+                      <span>Độ dày:</span>
                       <span className="text-indigo-400 font-bold">{subtitleStyle.outlineWidth}px</span>
                     </div>
                     <input

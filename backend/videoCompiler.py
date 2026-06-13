@@ -157,6 +157,15 @@ def get_fallback_font(text, size=24, font_family='sans-serif'):
 
     font_paths = []
     
+    cjk_families = {'msgothic', 'meiryo', 'msmincho', 'yugothic', 'yumin', 'bizudgothic', 'bizudmincho', 'togegothic'}
+    if has_cjk and font_family not in cjk_families:
+        if font_family == 'serif':
+            family_fonts = ["yumin.ttf", "msmincho.ttc", "BIZ-UDMinchoM.ttc"] + family_fonts
+        elif font_family == 'monospace':
+            family_fonts = ["msgothic.ttc"] + family_fonts
+        else: # sans-serif/cursive/others
+            family_fonts = ["msgothic.ttc", "meiryo.ttc", "YuGothR.ttc", "BIZ-UDGothicR.ttc"] + family_fonts
+
     # Prioritize selected family first
     for d in font_dirs:
         for f in family_fonts:
@@ -350,7 +359,7 @@ def draw_subtitles(frame_bgr, text, font_size=24, font_family='sans-serif', posi
         
     return cv2.cvtColor(np.array(img_pil.convert('RGB')), cv2.COLOR_RGB2BGR)
 
-def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans-serif', position='bottom', bg_opacity=0.6, outline_width=2, outline_color=(0, 0, 0), text_color=(255, 255, 255), max_line_len=38, bg_full_width=False, bg_height=80, bottom_margin=24):
+def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans-serif', position='bottom', bg_opacity=0.6, outline_width=2, outline_color=(0, 0, 0), text_color=(255, 255, 255), max_line_len=38, bg_full_width=False, bg_height=80, bottom_margin=24, bg_color=(0, 0, 0)):
     # Create transparent RGBA image
     img_pil = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img_pil)
@@ -359,11 +368,12 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
     font_size_scaled = int(font_size * (width / 800))
     font_size_scaled = max(1, font_size_scaled)
     
-    font = get_fallback_font(text, font_size_scaled, font_family)
-    initial_lines = wrap_text(text, max_line_len=max_line_len)
+    # Scale background height and bottom margin
+    bg_height_scaled = int(bg_height * (width / 800))
+    bottom_margin_scaled = int(bottom_margin * (width / 800))
     
     # Wrap by pixel width
-    max_pixel_width = int(width * 0.90)
+    max_pixel_width = int(width * 0.85)
     
     def wrap_by_pixel_width(line_text, font, max_w):
         if not line_text:
@@ -409,51 +419,66 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
                 lines.append(curr)
             return lines
 
-    lines = []
-    for line in initial_lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_w = bbox[2] - bbox[0]
-        except Exception:
-            line_w = len(line) * font.size
-        if line_w <= max_pixel_width:
-            lines.append(line)
-        else:
-            lines.extend(wrap_by_pixel_width(line, font, max_pixel_width))
-            
-    line_heights = []
-    for line in lines:
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_heights.append(bbox[3] - bbox[1])
-        except Exception:
-            line_heights.append(font_size_scaled)
-            
+    # Auto scale down font size if it exceeds the background box height in full-width mode
+    curr_font_size = font_size_scaled
     spacing = int(6 * (width / 800))
     spacing = max(2, spacing)
-    total_text_height = sum(line_heights) + spacing * (len(lines) - 1)
     
-    # Scale background height and bottom margin
-    bg_height_scaled = int(bg_height * (width / 800))
-    bottom_margin_scaled = int(bottom_margin * (width / 800))
-    
-    # Draw full width background if enabled
+    while curr_font_size > 8:
+        font = get_fallback_font(text, curr_font_size, font_family)
+        initial_lines = wrap_text(text, max_line_len=max_line_len)
+        
+        lines = []
+        for line in initial_lines:
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_w = bbox[2] - bbox[0]
+            except Exception:
+                line_w = len(line) * font.size
+            if line_w <= max_pixel_width:
+                lines.append(line)
+            else:
+                lines.extend(wrap_by_pixel_width(line, font, max_pixel_width))
+                
+        line_heights = []
+        for line in lines:
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_heights.append(bbox[3] - bbox[1])
+            except Exception:
+                line_heights.append(curr_font_size)
+                
+        total_text_height = sum(line_heights) + spacing * (len(lines) - 1)
+        
+        # Check if height is fine (leave vertical padding inside the box)
+        pad_y = int(height * 0.015)
+        max_text_h = bg_height_scaled - 2 * pad_y
+        
+        if not bg_full_width or total_text_height <= max_text_h or len(lines) <= 1:
+            break
+            
+        curr_font_size -= 2
+        
+    font_size_scaled = curr_font_size
+    font = get_fallback_font(text, font_size_scaled, font_family)
+
+    # Draw full width background if enabled (touches screen edges)
     if bg_full_width and bg_opacity > 0:
         if position == 'top':
-            box_y1 = bottom_margin_scaled
-            box_y2 = box_y1 + bg_height_scaled
+            box_y1 = 0
+            box_y2 = bg_height_scaled
         elif position == 'center':
             box_y1 = (height - bg_height_scaled) // 2
             box_y2 = box_y1 + bg_height_scaled
-        else: # bottom
-            box_y2 = height - bottom_margin_scaled
-            box_y1 = box_y2 - bg_height_scaled
+        else: # bottom (touches the absolute bottom edge of the frame)
+            box_y2 = height
+            box_y1 = height - bg_height_scaled
             
         # Draw full-width background rectangle
         box_draw = ImageDraw.Draw(img_pil)
         box_draw.rectangle(
             [0, box_y1, width, box_y2],
-            fill=(0, 0, 0, int(255 * bg_opacity))
+            fill=bg_color + (int(255 * bg_opacity),)
         )
         
         # Center the text inside this background
@@ -461,11 +486,14 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
     else:
         # Calculate Y start position for wrapped text line-by-line
         if position == 'top':
-            start_y = bottom_margin_scaled + int(8 * (width / 800))
+            start_y = int(height * 0.12)
         elif position == 'center':
             start_y = (height - total_text_height) // 2
         else: # bottom
-            start_y = height - bottom_margin_scaled - total_text_height - int(8 * (width / 800))
+            if bottom_margin != 24:
+                start_y = height - bottom_margin_scaled - total_text_height
+            else:
+                start_y = int(height * 0.88) - total_text_height
             
     curr_y = start_y
     for idx, line in enumerate(lines):
@@ -481,30 +509,24 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
         
         # Draw inline background boxes ONLY if NOT full-width background
         if not bg_full_width and bg_opacity > 0:
-            pad_x = int(20 * (width / 800))
-            pad_y = int(8 * (width / 800))
+            pad_x = int(width * 0.02)
+            pad_y = int(height * 0.015)
             rect_x1 = x - pad_x
             rect_y1 = curr_y - pad_y
             rect_x2 = x + w + pad_x
             rect_y2 = curr_y + h + pad_y
             
-            box_w = rect_x2 - rect_x1
-            box_h = rect_y2 - rect_y1
-            if box_w > 0 and box_h > 0:
-                box_img = Image.new('RGBA', (box_w, box_h), (0, 0, 0, 0))
-                box_draw = ImageDraw.Draw(box_img)
-                if hasattr(box_draw, 'rounded_rectangle'):
-                    box_draw.rounded_rectangle(
-                        [0, 0, box_w, box_h],
-                        radius=12,
-                        fill=(0, 0, 0, int(255 * bg_opacity))
-                    )
-                else:
-                    box_draw.rectangle(
-                        [0, 0, box_w, box_h],
-                        fill=(0, 0, 0, int(255 * bg_opacity))
-                    )
-                img_pil.paste(box_img, (rect_x1, rect_y1), box_img)
+            if hasattr(draw, 'rounded_rectangle'):
+                draw.rounded_rectangle(
+                    [rect_x1, rect_y1, rect_x2, rect_y2],
+                    radius=12,
+                    fill=bg_color + (int(255 * bg_opacity),)
+                )
+            else:
+                draw.rectangle(
+                    [rect_x1, rect_y1, rect_x2, rect_y2],
+                    fill=bg_color + (int(255 * bg_opacity),)
+                )
                 
         if outline_width > 0:
             offsets = [
@@ -829,6 +851,7 @@ def compile_project(config_path, srt_path, output_dir):
     bg_full_width = subtitle_style.get('bgFullWidth', False)
     bg_height = subtitle_style.get('bgHeight', 80)
     bottom_margin = subtitle_style.get('bottomMargin', 24)
+    bg_color = hex_to_rgb(subtitle_style.get('bgColor', '#000000'), (0, 0, 0))
 
     shots = project.get('shots', [])
     if not shots:
@@ -1212,7 +1235,8 @@ def compile_project(config_path, srt_path, output_dir):
                         max_line_len=max_line_length,
                         bg_full_width=bg_full_width,
                         bg_height=bg_height,
-                        bottom_margin=bottom_margin
+                        bottom_margin=bottom_margin,
+                        bg_color=bg_color
                     )
                 # Ultra fast NumPy vectorized blending
                 frame = (frame * (1.0 - current_overlay_alpha) + current_overlay_bgr * current_overlay_alpha).astype(np.uint8)
