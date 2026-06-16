@@ -60,13 +60,19 @@ app.on('ready', () => {
   // Đăng ký bộ xử lý cho protocol 'safe-file://' để nạp file từ bất kỳ thư mục nào cục bộ
   protocol.handle('safe-file', (request) => {
     try {
-      const decodedUrl = decodeURIComponent(request.url);
-      let filePath = decodedUrl.substring(12); // Remove 'safe-file://'
-      if (filePath.startsWith('localhost/')) {
-        filePath = filePath.substring(10);
-      }
-      filePath = path.normalize(filePath);
+      const url = new URL(request.url);
+      let filePath = decodeURIComponent(url.pathname);
       
+      // On Windows, resolve drive letter from pathname or host
+      if (process.platform === 'win32') {
+        if (filePath.startsWith('/') && filePath.match(/^\/[a-zA-Z]:/)) {
+          filePath = filePath.substring(1);
+        } else if (url.host && url.host.match(/^[a-zA-Z]$/)) {
+          filePath = url.host + ':' + filePath;
+        }
+      }
+      
+      filePath = path.normalize(filePath);
       const fileUrl = pathToFileURL(filePath).href;
       return net.fetch(fileUrl);
     } catch (error) {
@@ -384,6 +390,44 @@ ipcMain.handle('scan-bgm', async (event, projectPath) => {
     }
   } catch (error) {
     return { error: error.message };
+  }
+});
+
+ipcMain.handle('list-fonts', async () => {
+  try {
+    const isDev = process.env.NODE_ENV === 'development';
+    let fontsDir;
+    if (isDev) {
+      fontsDir = path.join(__dirname, '../resources/fonts');
+      if (!fs.existsSync(fontsDir)) {
+        const devSrcFonts = path.join(__dirname, '../src/fonts');
+        if (fs.existsSync(devSrcFonts)) {
+          fontsDir = devSrcFonts;
+        }
+      }
+    } else {
+      fontsDir = path.join(process.resourcesPath, 'fonts');
+    }
+    
+    if (fs.existsSync(fontsDir)) {
+      const files = fs.readdirSync(fontsDir);
+      const fontFiles = files.filter(file => {
+        const ext = path.extname(file).toLowerCase();
+        return ['.ttf', '.otf', '.ttc'].includes(ext);
+      });
+      const result = fontFiles.map(file => {
+        const fullPath = path.join(fontsDir, file);
+        const encodedPath = encodeURI(fullPath.replace(/\\/g, '/'));
+        return {
+          name: file,
+          url: `safe-file://${encodedPath}`
+        };
+      });
+      return { success: true, fonts: result };
+    }
+    return { success: true, fonts: [] };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 });
 

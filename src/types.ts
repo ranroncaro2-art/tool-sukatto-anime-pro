@@ -53,6 +53,8 @@ export interface Shot {
   referenceImages?: ShotRefImage[];
   mediaId?: string;
   accountId?: string;
+  excludedCharacters?: string[];
+  excludedBackgrounds?: string[];
 }
 
 export interface Situation {
@@ -95,6 +97,8 @@ export interface ProjectData {
   shots: Shot[];
   bgmSuggestions?: BgmSuggestion[];
   introSubIndex?: string;
+  hiddenSrtIndexes?: string[];
+  useAiDirector?: boolean;
 }
 
 export interface PromptRule {

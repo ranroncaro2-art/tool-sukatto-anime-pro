@@ -227,6 +227,7 @@ const getMatchedCharacters = (shot: Shot, characters: Character[]) => {
   const detectedNames = detectCharacters(shot.prompt, characters);
   
   const matched = characters.filter(char => {
+    if (shot.excludedCharacters?.includes(char.name)) return false;
     if (!char.imageUrl) return false;
     if (detectedNames.includes(char.name)) return true;
     
@@ -270,6 +271,7 @@ const getMatchedBackgrounds = (shot: Shot, backgrounds: Background[]) => {
   const promptLower = (shot.prompt || "").toLowerCase();
   
   return backgrounds.filter(bg => {
+    if (shot.excludedBackgrounds?.includes(bg.location)) return false;
     if (!bg.imageUrl) return false;
     const loc = bg.location.toLowerCase();
     
@@ -1032,7 +1034,62 @@ export default function App() {
           localStorage.setItem("ai_image_folder_path", baseDir);
           setDirPermissionGranted(true);
           setSelectedDirectoryHandle({ name: baseDir.split(/[\\/]/).pop() || baseDir });
-          alert(`Đã liên kết thành công với thư mục: "${baseDir}".`);
+          
+          let hasImportedProject = false;
+          try {
+            const dirRes = await (window as any).electronAPI.listFiles(baseDir);
+            if (dirRes && dirRes.success && dirRes.files) {
+              const files: string[] = dirRes.files;
+              const jsonFile = files.find(f => f.endsWith("_project_state.json") || f === "project_state.json");
+              if (jsonFile) {
+                const cleanPath = `${baseDir}/${jsonFile}`.replace(/\\/g, '/');
+                const response = await fetch(`safe-file:///${encodeURI(cleanPath)}`);
+                if (response.ok) {
+                  const text = await response.text();
+                  const state = JSON.parse(text);
+                  if (state.version === "VEO3-SUKATTO-PRO-v1" && state.project) {
+                    const confirmRestore = window.confirm(`Tìm thấy tệp khôi phục dự án "${jsonFile}" trong thư mục này. Bạn có muốn phục hồi dự án không?`);
+                    if (confirmRestore) {
+                      await restoreProjectState(state);
+                      hasImportedProject = true;
+                    }
+                  }
+                }
+              }
+            }
+          } catch (scanErr) {
+            console.error("Error scanning folder for project JSON:", scanErr);
+          }
+
+          let msg = `Đã liên kết thành công với thư mục: "${baseDir}".`;
+          if (hasImportedProject) {
+            msg += "\nKhôi phục dự án thành công!";
+            alert(msg);
+          } else {
+            try {
+              const scanned = await scanFolderForScriptAndSubtitles(baseDir);
+              let hasData = false;
+              if (scanned.srtText) {
+                setSrtText(scanned.srtText);
+                localStorage.setItem("ai_srt_text", scanned.srtText);
+                setSrtData(parseSRT(scanned.srtText));
+                hasData = true;
+              }
+              if (scanned.scriptText) {
+                setScriptText(scanned.scriptText);
+                localStorage.setItem("ai_script_text", scanned.scriptText);
+                setScriptData(parseScript(scanned.scriptText));
+                hasData = true;
+              }
+              if (hasData) {
+                msg += "\nTìm thấy và hiển thị kịch bản / phân cảnh từ thư mục.";
+              }
+              alert(msg);
+            } catch (fileScanErr) {
+              console.error(fileScanErr);
+              alert(msg);
+            }
+          }
         }
         return;
       }
@@ -1057,7 +1114,61 @@ export default function App() {
         setFolderPathInput(dirHandle.name);
         localStorage.setItem("ai_image_folder_path", dirHandle.name);
       }
-      alert(`Đã liên kết thành công với thư mục: "${dirHandle.name}".`);
+      
+      let hasImportedProject = false;
+      try {
+        let jsonEntry: any = null;
+        for await (const entry of dirHandle.values()) {
+          if (entry.kind === 'file' && (entry.name.endsWith("_project_state.json") || entry.name === "project_state.json")) {
+            jsonEntry = entry;
+            break;
+          }
+        }
+        if (jsonEntry) {
+          const file = await jsonEntry.getFile();
+          const text = await file.text();
+          const state = JSON.parse(text);
+          if (state.version === "VEO3-SUKATTO-PRO-v1" && state.project) {
+            const confirmRestore = window.confirm(`Tìm thấy tệp khôi phục dự án "${jsonEntry.name}" trong thư mục này. Bạn có muốn phục hồi dự án không?`);
+            if (confirmRestore) {
+              await restoreProjectState(state);
+              hasImportedProject = true;
+            }
+          }
+        }
+      } catch (scanErr) {
+        console.error("Error scanning folder for project JSON:", scanErr);
+      }
+
+      let msg = `Đã liên kết thành công với thư mục: "${dirHandle.name}".`;
+      if (hasImportedProject) {
+        msg += "\nKhôi phục dự án thành công!";
+        alert(msg);
+      } else {
+        try {
+          const scanned = await scanFolderForScriptAndSubtitles("", undefined, dirHandle);
+          let hasData = false;
+          if (scanned.srtText) {
+            setSrtText(scanned.srtText);
+            localStorage.setItem("ai_srt_text", scanned.srtText);
+            setSrtData(parseSRT(scanned.srtText));
+            hasData = true;
+          }
+          if (scanned.scriptText) {
+            setScriptText(scanned.scriptText);
+            localStorage.setItem("ai_script_text", scanned.scriptText);
+            setScriptData(parseScript(scanned.scriptText));
+            hasData = true;
+          }
+          if (hasData) {
+            msg += "\nTìm thấy và hiển thị kịch bản / phân cảnh từ thư mục.";
+          }
+          alert(msg);
+        } catch (fileScanErr) {
+          console.error(fileScanErr);
+          alert(msg);
+        }
+      }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         alert(`Lỗi khi chọn thư mục: ${err.message}`);
@@ -4797,6 +4908,162 @@ export default function App() {
     saveAs(blob, `${prefix}project_state.json`);
   };
 
+  const scanFolderForScriptAndSubtitles = async (folderPath: string, prefixName?: string, customDirHandle?: any) => {
+    const result = { srtText: "", scriptText: "" };
+    try {
+      if ((window as any).electronAPI && (window as any).electronAPI.listFiles) {
+        const dirRes = await (window as any).electronAPI.listFiles(folderPath);
+        if (dirRes && dirRes.success && dirRes.files) {
+          const files: string[] = dirRes.files;
+          
+          const targetPrefix = prefixName ? prefixName.trim().toLowerCase() : "";
+          let srtFile = "";
+          let scriptFile = "";
+          
+          if (targetPrefix) {
+            srtFile = files.find(f => f.toLowerCase() === `${targetPrefix}_subtitles.srt` || f.toLowerCase() === `${targetPrefix}_sub.srt`) || "";
+            scriptFile = files.find(f => f.toLowerCase() === `${targetPrefix}_script.txt`) || "";
+          }
+          
+          if (!srtFile) {
+            srtFile = files.find(f => f.toLowerCase() === "subtitles.srt" || f.toLowerCase() === "sub.srt" || (f.toLowerCase().includes("sub") && f.toLowerCase().endsWith(".srt"))) || "";
+          }
+          if (!scriptFile) {
+            scriptFile = files.find(f => f.toLowerCase() === "script.txt" || (f.toLowerCase().includes("script") && f.toLowerCase().endsWith(".txt")) || (f.toLowerCase().includes("kịch bản") && f.toLowerCase().endsWith(".txt"))) || "";
+          }
+          
+          if (srtFile) {
+            const cleanPath = `${folderPath}/${srtFile}`.replace(/\\/g, '/');
+            const response = await fetch(`safe-file:///${encodeURI(cleanPath)}`);
+            if (response.ok) {
+              result.srtText = await response.text();
+            }
+          }
+          if (scriptFile) {
+            const cleanPath = `${folderPath}/${scriptFile}`.replace(/\\/g, '/');
+            const response = await fetch(`safe-file:///${encodeURI(cleanPath)}`);
+            if (response.ok) {
+              result.scriptText = await response.text();
+            }
+          }
+        }
+      } else {
+        const dirHandle = customDirHandle || selectedDirectoryHandle;
+        if (!dirHandle) return result;
+        
+        const targetPrefix = prefixName ? prefixName.trim().toLowerCase() : "";
+        let srtEntry: any = null;
+        let scriptEntry: any = null;
+        
+        for await (const entry of dirHandle.values()) {
+          if (entry.kind === 'file') {
+            const name = entry.name.toLowerCase();
+            if (targetPrefix && name === `${targetPrefix}_subtitles.srt`) {
+              srtEntry = entry;
+            } else if (targetPrefix && name === `${targetPrefix}_script.txt`) {
+              scriptEntry = entry;
+            }
+            
+            if (!srtEntry && (name === "subtitles.srt" || name === "sub.srt" || (name.includes("sub") && name.endsWith(".srt")))) {
+              srtEntry = entry;
+            }
+            if (!scriptEntry && (name === "script.txt" || (name.includes("script") && name.endsWith(".txt")) || (name.includes("kịch bản") && name.endsWith(".txt")))) {
+              scriptEntry = entry;
+            }
+          }
+        }
+        
+        if (srtEntry) {
+          const file = await srtEntry.getFile();
+          result.srtText = await file.text();
+        }
+        if (scriptEntry) {
+          const file = await scriptEntry.getFile();
+          result.scriptText = await file.text();
+        }
+      }
+    } catch (e) {
+      console.error("Error scanning folder for script/subtitles:", e);
+    }
+    return result;
+  };
+
+  const restoreProjectState = async (state: any) => {
+    if (state.scriptName !== undefined) setScriptName(state.scriptName);
+    if (state.folderPathInput !== undefined) {
+      setFolderPathInput(state.folderPathInput);
+      localStorage.setItem("ai_image_folder_path", state.folderPathInput);
+    }
+    if (state.apiBaseUrl !== undefined) setApiBaseUrl(state.apiBaseUrl);
+    if (state.selectedModel !== undefined) setSelectedModel(state.selectedModel);
+    if (state.apiKey !== undefined) {
+      setApiKey(state.apiKey);
+      localStorage.setItem("ai_api_key", state.apiKey);
+    }
+    if (state.concurrencyLimit !== undefined) {
+      setConcurrencyLimit(state.concurrencyLimit);
+      localStorage.setItem("ai_concurrency_limit", String(state.concurrencyLimit));
+    }
+    if (state.videoConcurrencyLimit !== undefined) {
+      setVideoConcurrencyLimit(state.videoConcurrencyLimit);
+      localStorage.setItem("ai_video_concurrency_limit", String(state.videoConcurrencyLimit));
+    }
+    if (state.maxAttempts !== undefined) {
+      setMaxAttempts(state.maxAttempts);
+      localStorage.setItem("ai_max_attempts", String(state.maxAttempts));
+    }
+    if (state.retryDelay !== undefined) {
+      setRetryDelay(state.retryDelay);
+      localStorage.setItem("ai_retry_delay", String(state.retryDelay));
+    }
+    if (state.imageBatchDelay !== undefined) {
+      setImageBatchDelay(state.imageBatchDelay);
+      localStorage.setItem("ai_image_batch_delay", String(state.imageBatchDelay));
+    }
+    if (state.videoBatchDelay !== undefined) {
+      setVideoBatchDelay(state.videoBatchDelay);
+      localStorage.setItem("ai_video_batch_delay", String(state.videoBatchDelay));
+    }
+    if (state.promptRules !== undefined) {
+      setPromptRules(state.promptRules);
+      localStorage.setItem("ai_prompt_rules", JSON.stringify(state.promptRules));
+    }
+    if (state.selectedStyleId !== undefined) setSelectedStyleId(state.selectedStyleId);
+    if (state.videoModelR2V !== undefined) setVideoModelR2V(state.videoModelR2V);
+    if (state.videoModelT2V !== undefined) setVideoModelT2V(state.videoModelT2V);
+    if (state.videoCountPerPrompt !== undefined) {
+      setVideoCountPerPrompt(state.videoCountPerPrompt);
+      localStorage.setItem("ai_video_count_per_prompt", String(state.videoCountPerPrompt));
+    }
+    if (state.videoAspectRatio !== undefined) setVideoAspectRatio(state.videoAspectRatio);
+    
+    let srtVal = state.srtText || "";
+    let scriptVal = state.scriptText || "";
+    
+    const folderPath = state.folderPathInput || folderPathInput;
+    if (folderPath) {
+      const scanned = await scanFolderForScriptAndSubtitles(folderPath, state.scriptName);
+      if (scanned.srtText) srtVal = scanned.srtText;
+      if (scanned.scriptText) scriptVal = scanned.scriptText;
+    }
+    
+    if (srtVal) {
+      setSrtText(srtVal);
+      localStorage.setItem("ai_srt_text", srtVal);
+      setSrtData(parseSRT(srtVal));
+    }
+    if (scriptVal) {
+      setScriptText(scriptVal);
+      localStorage.setItem("ai_script_text", scriptVal);
+      setScriptData(parseScript(scriptVal));
+    }
+
+    if (state.project) {
+      setProject(state.project);
+      await saveProjectCacheToDB(state.project);
+    }
+  };
+
   const handleImportProjectState = (file: File) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
@@ -4807,70 +5074,7 @@ export default function App() {
           throw new Error("Tệp JSON không đúng định dạng khôi phục dự án VEO.");
         }
 
-        // Restore all states!
-        if (state.scriptName !== undefined) setScriptName(state.scriptName);
-        if (state.folderPathInput !== undefined) {
-          setFolderPathInput(state.folderPathInput);
-          localStorage.setItem("ai_image_folder_path", state.folderPathInput);
-        }
-        if (state.apiBaseUrl !== undefined) setApiBaseUrl(state.apiBaseUrl);
-        if (state.selectedModel !== undefined) setSelectedModel(state.selectedModel);
-        if (state.apiKey !== undefined) {
-          setApiKey(state.apiKey);
-          localStorage.setItem("ai_api_key", state.apiKey);
-        }
-        if (state.concurrencyLimit !== undefined) {
-          setConcurrencyLimit(state.concurrencyLimit);
-          localStorage.setItem("ai_concurrency_limit", String(state.concurrencyLimit));
-        }
-        if (state.videoConcurrencyLimit !== undefined) {
-          setVideoConcurrencyLimit(state.videoConcurrencyLimit);
-          localStorage.setItem("ai_video_concurrency_limit", String(state.videoConcurrencyLimit));
-        }
-        if (state.maxAttempts !== undefined) {
-          setMaxAttempts(state.maxAttempts);
-          localStorage.setItem("ai_max_attempts", String(state.maxAttempts));
-        }
-        if (state.retryDelay !== undefined) {
-          setRetryDelay(state.retryDelay);
-          localStorage.setItem("ai_retry_delay", String(state.retryDelay));
-        }
-        if (state.imageBatchDelay !== undefined) {
-          setImageBatchDelay(state.imageBatchDelay);
-          localStorage.setItem("ai_image_batch_delay", String(state.imageBatchDelay));
-        }
-        if (state.videoBatchDelay !== undefined) {
-          setVideoBatchDelay(state.videoBatchDelay);
-          localStorage.setItem("ai_video_batch_delay", String(state.videoBatchDelay));
-        }
-        if (state.promptRules !== undefined) {
-          setPromptRules(state.promptRules);
-          localStorage.setItem("ai_prompt_rules", JSON.stringify(state.promptRules));
-        }
-        if (state.selectedStyleId !== undefined) setSelectedStyleId(state.selectedStyleId);
-        if (state.videoModelR2V !== undefined) setVideoModelR2V(state.videoModelR2V);
-        if (state.videoModelT2V !== undefined) setVideoModelT2V(state.videoModelT2V);
-        if (state.videoCountPerPrompt !== undefined) {
-          setVideoCountPerPrompt(state.videoCountPerPrompt);
-          localStorage.setItem("ai_video_count_per_prompt", String(state.videoCountPerPrompt));
-        }
-        if (state.videoAspectRatio !== undefined) setVideoAspectRatio(state.videoAspectRatio);
-        
-        if (state.srtText !== undefined) {
-          setSrtText(state.srtText);
-          localStorage.setItem("ai_srt_text", state.srtText);
-          setSrtData(parseSRT(state.srtText));
-        }
-        if (state.scriptText !== undefined) {
-          setScriptText(state.scriptText);
-          localStorage.setItem("ai_script_text", state.scriptText);
-          setScriptData(parseScript(state.scriptText));
-        }
-
-        if (state.project) {
-          setProject(state.project);
-          await saveProjectCacheToDB(state.project);
-        }
+        await restoreProjectState(state);
 
         alert("Khôi phục dự án thành công! Toàn bộ kịch bản, ảnh tham chiếu, mediaID và liên kết đã được khôi phục nguyên vẹn.");
       } catch (err: any) {
@@ -4979,6 +5183,14 @@ export default function App() {
     };
     zip.file(`${prefix}project_state.json`, JSON.stringify(projectState, null, 2));
 
+    // 6. Script and Subtitles
+    if (scriptText) {
+      zip.file(`${prefix}script.txt`, scriptText);
+    }
+    if (srtText) {
+      zip.file(`${prefix}subtitles.srt`, srtText);
+    }
+
     // Generate ZIP
     setProgress({ step: "Zipping project prompts...", percent: 50 });
     const content = await zip.generateAsync({ type: "blob" });
@@ -5058,6 +5270,12 @@ export default function App() {
           project
         };
         await saveFileToProject(null, `${scriptName || "project"}_project_state.json`, null, JSON.stringify(projectState, null, 2));
+        if (scriptText) {
+          await saveFileToProject(null, `${scriptName || "project"}_script.txt`, null, scriptText);
+        }
+        if (srtText) {
+          await saveFileToProject(null, `${scriptName || "project"}_subtitles.srt`, null, srtText);
+        }
 
         setProgress({ step: "", percent: 0 });
         alert(`Đã lưu thành công ${cleanAssets.length} ảnh và tệp khôi phục dự án (project_state.json) trực tiếp vào thư mục cục bộ:\n${folderPathInput}`);
@@ -5142,6 +5360,21 @@ export default function App() {
       await metadataWritable.write(jsonBlob);
       await metadataWritable.close();
 
+      if (scriptText) {
+        const scriptBlob = new Blob([scriptText], { type: "text/plain" });
+        const scriptFileHandle = await dirHandle.getFileHandle(`${scriptName || "project"}_script.txt`, { create: true });
+        const scriptWritable = await scriptFileHandle.createWritable();
+        await scriptWritable.write(scriptBlob);
+        await scriptWritable.close();
+      }
+      if (srtText) {
+        const srtBlob = new Blob([srtText], { type: "text/plain" });
+        const srtFileHandle = await dirHandle.getFileHandle(`${scriptName || "project"}_subtitles.srt`, { create: true });
+        const srtWritable = await srtFileHandle.createWritable();
+        await srtWritable.write(srtBlob);
+        await srtWritable.close();
+      }
+
       setProgress({ step: "", percent: 0 });
       alert(`Đã lưu thành công ${cleanAssets.length} ảnh và tệp khôi phục dự án (project_state.json) trực tiếp vào thư mục cục bộ:\n${folderPathInput}`);
     } catch (err: any) {
@@ -5192,6 +5425,12 @@ export default function App() {
           project
         };
         zip.file(`${scriptName || "project"}_project_state.json`, JSON.stringify(projectState, null, 2));
+        if (scriptText) {
+          zip.file(`${scriptName || "project"}_script.txt`, scriptText);
+        }
+        if (srtText) {
+          zip.file(`${scriptName || "project"}_subtitles.srt`, srtText);
+        }
 
         const prefix = scriptName.trim() ? `${scriptName.trim()}_` : "";
         const zipBlob = await zip.generateAsync({ type: "blob" });

@@ -138,6 +138,88 @@ Return ONLY the tags string, nothing else.`;
 
       const cleanPrompt = resultText.trim().replace(/^`+|`+$/g, "");
       return NextResponse.json({ sunoPrompt: cleanPrompt });
+    } else if (mode === 'ai_director') {
+      const { srtText } = body;
+      const prompt = `Bạn là một đạo diễn phim chuyên nghiệp. Nhiệm vụ của bạn là đọc file phụ đề SRT và phân loại các câu phụ đề thành hai loại:
+1. Câu thoại của nhân vật hoặc suy nghĩ nội tâm của nhân vật (thường nằm trong ngoặc đơn như (ふう...) hoặc đi kèm tên nhân vật nói). Những câu này CẦN GIỮ LẠI phụ đề và thuyết minh giọng đọc.
+2. Câu dẫn chuyện (narrator/narration) mô tả hành động nhân vật, mô tả bối cảnh, mô tả chuyển động của tự nhiên, không phải là lời nói trực tiếp hay suy nghĩ nội tâm của nhân vật. Những câu này CẦN ẨN phụ đề và không cần xuất thuyết minh giọng đọc (bỏ qua tiếng đọc).
+
+Hãy liệt kê các số thứ tự (index) của các câu phụ đề thuộc loại 2 (câu dẫn chuyện) để chúng không xuất hiện trên video xuất ra và tắt giọng thuyết minh của chúng.
+
+Ví dụ:
+SRT:
+1
+00:00:00,000 --> 00:00:03,040
+（ふう、今日もノルマ達成だな）
+2
+00:00:03,320 --> 00:00:08,760
+高級外車ポルシェのマカンを走らせながら、豊島はハンドルを軽く叩いた。
+3
+00:00:09,050 --> 00:00:15,130
+フロントガラス của 向こうには、彼が通う高級会員制スポーツジムのネオンが見えている。
+4
+00:00:15,390 --> 00:00:22,270
+（相変わらずジムの駐車場は満車か。併用コインパーキングも１時間千円。高えんだよな……）
+
+Đầu ra JSON đề xuất:
+{
+  "hiddenSrtIndexes": ["2", "3"]
+}
+
+Hãy phân tích toàn bộ phụ đề SRT sau đây và trả về đối tượng JSON chính xác có cấu trúc:
+{
+  "hiddenSrtIndexes": [...]
+}
+Không thêm bất kỳ giải thích nào khác ngoài JSON hợp lệ.
+
+SRT cần phân tích:
+${srtText}`;
+
+      let resultText = "";
+      if (modelToUse.includes("gemini")) {
+        const ai = new GoogleGenAI({ apiKey: keyToUse.trim() });
+        const res = await ai.models.generateContent({
+          model: modelToUse,
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          config: { responseMimeType: "application/json" }
+        });
+        resultText = res.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      } else if (modelToUse.includes("gpt")) {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${keyToUse}` },
+          body: JSON.stringify({
+            model: modelToUse,
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_object" }
+          })
+        });
+        const data = await response.json();
+        resultText = data.choices?.[0]?.message?.content || "";
+      } else if (modelToUse.includes("claude")) {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": keyToUse,
+            "anthropic-version": "2023-06-01"
+          },
+          body: JSON.stringify({
+            model: modelToUse,
+            max_tokens: 4000,
+            messages: [{ role: "user", content: prompt }]
+          })
+        });
+        const data = await response.json();
+        resultText = data.content?.[0]?.text || "";
+      }
+
+      if (!resultText) {
+        throw new Error("Empty AI response");
+      }
+
+      const parsed = JSON.parse(resultText);
+      return NextResponse.json(parsed);
     }
 
     return NextResponse.json({ error: "Invalid mode" }, { status: 400 });

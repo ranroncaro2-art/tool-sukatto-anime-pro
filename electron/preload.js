@@ -24,5 +24,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLastCompileData: () => ipcRenderer.invoke('get-last-compile-data'),
   openPath: (pathStr) => ipcRenderer.invoke('open-path', pathStr),
   listFiles: (dirPath) => ipcRenderer.invoke('list-files-in-dir', dirPath),
-  saveFile: (args) => ipcRenderer.invoke('save-file', args)
+  saveFile: (args) => ipcRenderer.invoke('save-file', args),
+  listFonts: () => ipcRenderer.invoke('list-fonts')
 });

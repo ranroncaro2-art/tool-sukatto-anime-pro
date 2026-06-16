@@ -143,6 +143,9 @@ const getAudioPosition = (
 };
 
 const getCssFontFamily = (familyKey: string) => {
+  if (familyKey && familyKey.match(/\.(ttf|otf|ttc)$/i)) {
+    return `"${familyKey.replace(/\.[^/.]+$/, "")}", sans-serif`;
+  }
   switch (familyKey) {
     case 'msgothic':
       return 'MS Gothic, "ＭＳ ゴシック", sans-serif';
@@ -183,6 +186,42 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
 }) => {
   const [currentPlayIndex, setCurrentPlayIndex] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  
+  interface LocalFont {
+    name: string;
+    url: string;
+  }
+  const [localFonts, setLocalFonts] = useState<LocalFont[]>([]);
+
+  useEffect(() => {
+    const fetchAndRegisterFonts = async () => {
+      const isElectron = !!(window as any).electronAPI;
+      if (isElectron) {
+        try {
+          const res = await (window as any).electronAPI.listFonts();
+          if (res && res.success && res.fonts) {
+            setLocalFonts(res.fonts);
+            
+            // Register fonts dynamically in browser context
+            for (const font of res.fonts) {
+              try {
+                const fontName = font.name.replace(/\.[^/.]+$/, "");
+                const fontFace = new FontFace(fontName, `url("${font.url}")`);
+                const loadedFace = await fontFace.load();
+                (document.fonts as any).add(loadedFace);
+                console.log(`Successfully registered dynamic font face: ${fontName}`);
+              } catch (fontErr) {
+                console.error(`Failed to register dynamic font face for ${font.name}:`, fontErr);
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Failed to fetch local fonts list:", err);
+        }
+      }
+    };
+    fetchAndRegisterFonts();
+  }, []);
   const [volume, setVolume] = useState<number>(0.8);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -190,7 +229,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
   const [zoomScale, setZoomScale] = useState<number>(100);
   
   // Sub-tab switching in the right panel
-  const [rightSubTab, setRightSubTab] = useState<"playlist" | "bgm">("playlist");
+  const [rightSubTab, setRightSubTab] = useState<"playlist" | "bgm" | "ai_director">("playlist");
 
   // Voice & BGM Preloading/Cache
   const [voiceBlobUrls, setVoiceBlobUrls] = useState<Record<string, string>>({});
@@ -315,7 +354,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     setBgmSuggestions,
     generateBgmSuggestions,
     scanLocalBgmFiles,
-    regenerateBgmPrompt
+    regenerateBgmPrompt,
+    runAiDirector
   } = useProjectStore();
 
   // Sync store suggestions on project load
@@ -568,7 +608,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       const activeShot = validShots[currentPlayIndex];
       if (activeShot?.videoUrl) {
         video.src = activeShot.videoUrl;
-        video.volume = isMuted ? 0 : volume;
+        const isHidden = isShotSubHidden(activeShot);
+        video.volume = isMuted ? 0 : (isHidden ? volume : 0);
         
         if (isPlaying) {
           video.play().catch(() => {
@@ -597,7 +638,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     }
   }, [isPlaying]);
 
-  // Sync volume of voice and BGM audios
+  // Sync volume of voice, BGM and video audios
   useEffect(() => {
     const activeVol = isMuted ? 0 : volume;
     if (voiceAudioRef.current) {
@@ -609,7 +650,14 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       const linearVol = Math.pow(10, bgmVolumeDb / 20);
       bgmAudioRef.current.volume = activeVol * linearVol;
     }
-  }, [volume, isMuted, bgmSuggestions]);
+    if (videoRef.current && currentPlayIndex !== -1) {
+      const activeShot = validShots[currentPlayIndex];
+      if (activeShot) {
+        const isHidden = isShotSubHidden(activeShot);
+        videoRef.current.volume = isHidden ? activeVol : 0;
+      }
+    }
+  }, [volume, isMuted, bgmSuggestions, currentPlayIndex, project.hiddenSrtIndexes, project.useAiDirector]);
 
   const syncAudioAndBgm = (calculatedMasterTime: number) => {
     // 1. Sync Voice Audio based on Subtitle block start time
@@ -620,7 +668,14 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       return calculatedMasterTime >= startTime && calculatedMasterTime <= endTime;
     });
 
-    if (activeBlock) {
+    const isBlockHidden = activeBlock ? (() => {
+      const bIdxNum = parseInt(activeBlock.index, 10);
+      const bOrigId = bIdxNum >= 1000 ? Math.floor(bIdxNum / 1000) : bIdxNum;
+      const hiddenList = project.useAiDirector !== false ? (project.hiddenSrtIndexes || []) : [];
+      return hiddenList.includes(activeBlock.index) || hiddenList.includes(String(bOrigId));
+    })() : false;
+
+    if (activeBlock && !isBlockHidden) {
       const idNum = parseInt(activeBlock.index, 10);
       const origId = idNum >= 1000 ? Math.floor(idNum / 1000) : idNum;
 
@@ -667,7 +722,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
         }
       }
     } else {
-      // Stop voice when moving outside a subtitle block
+      // Stop voice when moving outside a subtitle block or when it's hidden
       if (voiceAudioRef.current) {
         voiceAudioRef.current.pause();
       }
@@ -880,6 +935,99 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     }
   };
 
+  const isShotSubHidden = (shot: Shot): boolean => {
+    if (project.useAiDirector === false) return false;
+    if (!project.hiddenSrtIndexes || project.hiddenSrtIndexes.length === 0) return false;
+    if (!shot.range) {
+      const idx = project.shots.findIndex(s => s.id === shot.id);
+      const shotIdxStr = String(idx !== -1 ? idx + 1 : shot.id);
+      const shotIdStr = String(shot.id);
+      return project.hiddenSrtIndexes.includes(shotIdxStr) || project.hiddenSrtIndexes.includes(shotIdStr);
+    }
+    try {
+      const parts = shot.range.split("-");
+      const startIdx = parseInt(parts[0], 10);
+      const endIdx = parts.length > 1 ? parseInt(parts[1], 10) : startIdx;
+      for (let i = startIdx; i <= endIdx; i++) {
+        if (project.hiddenSrtIndexes.includes(String(i))) {
+          return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  };
+
+  const toggleSrtBlockHidden = (blockIndex: string) => {
+    if (!setProject || !project) return;
+    const currentHidden = project.hiddenSrtIndexes || [];
+    let nextHidden;
+    if (currentHidden.includes(blockIndex)) {
+      nextHidden = currentHidden.filter(idx => idx !== blockIndex);
+    } else {
+      nextHidden = [...currentHidden, blockIndex];
+    }
+    setProject({
+      ...project,
+      hiddenSrtIndexes: nextHidden,
+      useAiDirector: true
+    });
+  };
+
+  const [isGeneratingAiDirector, setIsGeneratingAiDirector] = useState(false);
+
+  const handleRunAiDirector = async () => {
+    if (!apiKey) {
+      alert("Vui lòng cấu hình API Key ở Sidebar/Cài đặt trước.");
+      return;
+    }
+    
+    // Reconstruct srt text
+    let srtText = "";
+    if (srtData && srtData.length > 0) {
+      srtData.forEach(block => {
+        srtText += `${block.index}\n${block.time}\n${block.text}\n\n`;
+      });
+    } else {
+      srtText = localStorage.getItem("ai_srt_text") || "";
+    }
+
+    if (!srtText) {
+      alert("Không tìm thấy phụ đề SRT để phân tích.");
+      return;
+    }
+
+    setIsGeneratingAiDirector(true);
+    try {
+      setSystemLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🎬 AI Đạo diễn: Đang đọc và phân tích phụ đề SRT...`
+      ]);
+      
+      const hiddenIndexes = await runAiDirector(srtText, apiKey, selectedModel);
+      
+      if (setProject) {
+        setProject(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            hiddenSrtIndexes: hiddenIndexes,
+            useAiDirector: true
+          };
+        });
+      }
+      
+      setSystemLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] 🎬 AI Đạo diễn: Thành công! Đã lọc ra ${hiddenIndexes.length} phụ đề là câu lời dẫn.`
+      ]);
+      alert(`AI Đạo diễn đã phân tích xong! Lọc ra ${hiddenIndexes.length} câu lời dẫn không cần hiển thị.`);
+    } catch (err: any) {
+      alert(`Lỗi chạy AI Đạo diễn: ${err.message}`);
+    } finally {
+      setIsGeneratingAiDirector(false);
+    }
+  };
+
   const activeSubtitle = useMemo(() => {
     if (srtData.length === 0) return "";
     
@@ -892,14 +1040,24 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     });
 
     if (activeBlock) {
+      const bIdxNum = parseInt(activeBlock.index, 10);
+      const bOrigId = bIdxNum >= 1000 ? Math.floor(bIdxNum / 1000) : bIdxNum;
+      const hiddenList = project.useAiDirector !== false ? (project.hiddenSrtIndexes || []) : [];
+      if (hiddenList.includes(activeBlock.index) || hiddenList.includes(String(bOrigId))) {
+        return "";
+      }
       return activeBlock.text;
     }
 
     if (currentPlayIndex !== -1 && validShots[currentPlayIndex]) {
-      return getSubtitlesText(validShots[currentPlayIndex]);
+      const shot = validShots[currentPlayIndex];
+      if (isShotSubHidden(shot)) {
+        return "";
+      }
+      return getSubtitlesText(shot);
     }
     return "";
-  }, [currentTime, currentPlayIndex, validShots, srtData]);
+  }, [currentTime, currentPlayIndex, validShots, srtData, project.hiddenSrtIndexes, project.useAiDirector]);
 
   const retrieveAndSyncSrt = () => {
     const originalSrtText = localStorage.getItem("ai_srt_text_original");
@@ -1967,6 +2125,11 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                     <option value="bizudgothic">BIZ UD Gothic (BIZ UDゴシック)</option>
                     <option value="bizudmincho">BIZ UD Mincho (BIZ UD明朝)</option>
                     <option value="togegothic">Toge Gothic (とげゴシック-Bd)</option>
+                    {localFonts.map(font => (
+                      <option key={font.name} value={font.name}>
+                        {font.name.replace(/\.[^/.]+$/, "")} (Local)
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -2201,25 +2364,36 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
           <div className="flex border-b border-white/10 mb-2 bg-black/20 rounded-xl overflow-hidden p-0.5">
             <button
               onClick={() => setRightSubTab("playlist")}
-              className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 rightSubTab === "playlist" 
                   ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/25" 
                   : "text-zinc-500 hover:text-zinc-300 border border-transparent"
               }`}
             >
-              <ListVideo className="w-3.5 h-3.5" />
+              <ListVideo className="w-3 h-3" />
               <span>Dòng thời gian ({validShots.length})</span>
             </button>
             <button
               onClick={() => setRightSubTab("bgm")}
-              className={`flex-1 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 rightSubTab === "bgm" 
                   ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/25" 
                   : "text-zinc-500 hover:text-zinc-300 border border-transparent"
               }`}
             >
-              <Music className="w-3.5 h-3.5" />
-              <span>Gợi ý Nhạc nền ({bgmSuggestions.length})</span>
+              <Music className="w-3 h-3" />
+              <span>Nhạc nền ({bgmSuggestions.length})</span>
+            </button>
+            <button
+              onClick={() => setRightSubTab("ai_director")}
+              className={`flex-1 py-2 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                rightSubTab === "ai_director" 
+                  ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/25" 
+                  : "text-zinc-500 hover:text-zinc-300 border border-transparent"
+              }`}
+            >
+              <Cpu className="w-3 h-3" />
+              <span>AI Đạo Diễn ({project.useAiDirector !== false ? (project.hiddenSrtIndexes?.length || 0) : "Tắt"})</span>
             </button>
           </div>
 
@@ -2236,18 +2410,24 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   const isCurrent = i === currentPlayIndex;
                   const hasVideo = !!shot.videoUrl;
                   const subtitleText = getSubtitlesText(shot);
+                  const isHidden = isShotSubHidden(shot);
 
                   return (
                     <div
                       key={shot.id}
                       onClick={() => hasVideo && handlePlaySegment(i)}
-                      className={`p-3.5 rounded-xl border transition-all duration-300 flex flex-col gap-2 relative ${
+                      className={cn(
+                        "p-3.5 rounded-xl border transition-all duration-300 flex flex-col gap-2 relative",
                         !hasVideo 
                           ? "bg-black/10 border-white/5 opacity-55 cursor-not-allowed"
                           : isCurrent
-                            ? "bg-indigo-600/10 border-indigo-500/50 shadow-md shadow-indigo-600/5 cursor-pointer scale-[1.01]"
-                            : "bg-black/40 border-white/5 hover:border-white/15 cursor-pointer hover:bg-black/60"
-                      }`}
+                            ? isHidden
+                              ? "bg-red-500/10 border-red-500/50 shadow-md shadow-red-500/5 cursor-pointer scale-[1.01]"
+                              : "bg-indigo-600/10 border-indigo-500/50 shadow-md shadow-indigo-600/5 cursor-pointer scale-[1.01]"
+                            : isHidden
+                              ? "bg-red-950/20 border-red-900/30 hover:border-red-800/40 hover:bg-red-950/30 cursor-pointer"
+                              : "bg-black/40 border-white/5 hover:border-white/15 cursor-pointer hover:bg-black/60"
+                      )}
                     >
                       <div className="flex items-center justify-between gap-3">
                         <div className="flex items-center gap-2">
@@ -2303,8 +2483,18 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                       </div>
 
                       {subtitleText ? (
-                        <p className="text-[10px] text-zinc-300 font-medium leading-relaxed italic line-clamp-2 pl-2.5 border-l border-white/10 mt-1">
+                        <p className={cn(
+                          "text-[10px] font-medium leading-relaxed italic line-clamp-2 pl-2.5 border-l mt-1",
+                          isHidden 
+                            ? "text-red-400 border-red-500/30" 
+                            : "text-zinc-300 border-white/10"
+                        )}>
                           {subtitleText}
+                          {isHidden && (
+                            <span className="text-[7px] font-mono font-black bg-red-500/20 border border-red-500/30 text-red-400 px-1 py-0.5 rounded ml-1.5 uppercase leading-none tracking-widest inline-block align-middle">
+                              ẨN / NARRATOR
+                            </span>
+                          )}
                         </p>
                       ) : (
                         <p className="text-[8px] text-zinc-600 font-mono italic mt-1">
@@ -2455,6 +2645,133 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
             </div>
           )}
 
+          {/* Sub-tab 3: AI Đạo Diễn Display */}
+          {rightSubTab === "ai_director" && (
+            <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar gap-3 flex flex-col" style={{ maxHeight: "70vh" }}>
+              <div className="space-y-4">
+                <div className="bg-zinc-950/40 border border-white/5 rounded-xl p-3 flex flex-col gap-2">
+                  <h4 className="text-[10px] font-mono font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                    <Cpu className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Hệ Thống Phân Tích AI Đạo Diễn</span>
+                  </h4>
+                  <p className="text-[9px] text-zinc-500 font-sans leading-relaxed">
+                    AI sẽ phân tích nội dung phụ đề SRT và tự động lọc ra các câu lời dẫn (narrator - mô tả hành động, bối cảnh, tự nhiên). Khi xuất video gộp, các câu này sẽ ẩn phụ đề, tắt tiếng đọc thuyết minh và giữ lại âm thanh tự nhiên của video đó.
+                  </p>
+
+                  <label className="flex items-center gap-2.5 bg-black/40 hover:bg-black/50 border border-white/5 hover:border-white/10 rounded-xl p-3 cursor-pointer select-none transition-all mt-1">
+                    <input
+                      type="checkbox"
+                      checked={project.useAiDirector !== false}
+                      onChange={(e) => {
+                        if (setProject) {
+                          setProject({
+                            ...project,
+                            useAiDirector: e.target.checked
+                          });
+                        }
+                      }}
+                      className="rounded border-zinc-700 text-rose-600 focus:ring-rose-500 w-4 h-4 bg-zinc-950 accent-rose-500 cursor-pointer"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-bold text-white leading-none">Sử dụng AI Đạo Diễn</span>
+                      <span className="text-[9px] text-zinc-500 font-mono mt-1">Bật để ẩn phụ đề/giọng thuyết minh của các câu lời dẫn. Tắt để trở về logic cũ.</span>
+                    </div>
+                  </label>
+
+                  {project.useAiDirector === false && (
+                    <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl p-3 flex items-start gap-2 text-left animate-fade-in">
+                      <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-bold uppercase leading-none">AI Đạo Diễn Đang Tắt</span>
+                        <p className="text-[9px] font-mono mt-1 text-zinc-400">
+                          Logic cũ được áp dụng: toàn bộ phụ đề sẽ hiển thị bình thường, thuyết minh giọng đọc và nhạc nền đầy đủ, âm thanh nguồn video bị tắt.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <button
+                    onClick={handleRunAiDirector}
+                    disabled={isGeneratingAiDirector || !apiKey}
+                    className="w-full py-2.5 mt-1 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 disabled:opacity-40 text-white rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer shadow-lg hover:shadow-[0_0_15px_rgba(239,68,68,0.25)] active:scale-95 flex items-center justify-center gap-1.5"
+                  >
+                    {isGeneratingAiDirector ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>Đang Phân Tích...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Cpu className="w-3 h-3" />
+                        <span>Chạy AI Đạo Diễn</span>
+                      </>
+                    )}
+                  </button>
+                  {!apiKey && (
+                    <p className="text-[8px] text-rose-400 italic mt-1 text-center">Vui lòng cấu hình API Key ở Cài đặt trước.</p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between border-b border-white/5 pb-1 px-1">
+                    <span className="text-[9px] font-mono text-zinc-400 font-bold uppercase">Danh sách phụ đề ({srtData.length})</span>
+                    <span className="text-[8px] font-mono text-zinc-500">Bấm để ẩn/hiện thủ công</span>
+                  </div>
+
+                  {srtData.length === 0 ? (
+                    <p className="text-[9px] text-zinc-600 font-mono italic text-center py-6">Không tìm thấy phụ đề SRT.</p>
+                  ) : (
+                    <div className="flex flex-col gap-2 max-h-[40vh] overflow-y-auto pr-1 custom-scrollbar">
+                      {srtData.map((block) => {
+                        const bIdxNum = parseInt(block.index, 10);
+                        const bOrigId = bIdxNum >= 1000 ? Math.floor(bIdxNum / 1000) : bIdxNum;
+                        const isHidden = (project.hiddenSrtIndexes || []).includes(block.index) || (project.hiddenSrtIndexes || []).includes(String(bOrigId));
+
+                        return (
+                          <div
+                            key={block.index}
+                            onClick={() => toggleSrtBlockHidden(block.index)}
+                            className={cn(
+                              "p-2.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 text-left",
+                              isHidden
+                                ? "bg-red-500/10 border-red-500/30 hover:border-red-500/50"
+                                : "bg-black/20 border-white/5 hover:border-white/10"
+                            )}
+                          >
+                            <div className="flex flex-col gap-1 min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className={cn(
+                                  "text-[8px] font-mono font-black px-1.5 py-0.5 rounded leading-none",
+                                  isHidden ? "bg-red-500 text-white" : "bg-zinc-800 text-zinc-400"
+                                )}>
+                                  #{block.index}
+                                </span>
+                                <span className="text-[7px] text-zinc-500 font-mono">{block.time.split("-->")[0].trim().substring(3, 11)}</span>
+                              </div>
+                              <p className={cn(
+                                "text-[9px] line-clamp-2 mt-0.5 font-medium leading-relaxed",
+                                isHidden ? "text-red-400 italic" : "text-zinc-300"
+                              )}>
+                                {block.text}
+                              </p>
+                            </div>
+                            <div className="shrink-0 flex items-center">
+                              {isHidden ? (
+                                <span className="px-1.5 py-0.5 bg-red-500/20 border border-red-500/30 text-red-400 text-[6px] font-mono font-black uppercase tracking-wider rounded">Ẩn</span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-500 text-[6px] font-mono font-black uppercase tracking-wider rounded">Hiện</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
 
       </div>
@@ -2534,6 +2851,26 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col">
                   <span className="text-xs font-bold text-white leading-none">Gắn cứng phụ đề (Burn Subtitles)</span>
                   <span className="text-[9px] text-zinc-500 font-mono mt-1">Vẽ trực tiếp phụ đề lên khung hình video đầu ra.</span>
+                </div>
+              </label>
+
+              <label className="flex items-center gap-2.5 bg-black/20 hover:bg-black/30 border border-white/5 hover:border-white/10 rounded-xl p-3.5 cursor-pointer select-none transition-colors">
+                <input
+                  type="checkbox"
+                  checked={project.useAiDirector !== false}
+                  onChange={(e) => {
+                    if (setProject) {
+                      setProject({
+                        ...project,
+                        useAiDirector: e.target.checked
+                      });
+                    }
+                  }}
+                  className="rounded border-zinc-700 text-rose-600 focus:ring-rose-500 w-4 h-4 bg-zinc-950 accent-rose-500 cursor-pointer"
+                />
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-white leading-none">Kích hoạt AI Đạo Diễn (AI Director)</span>
+                  <span className="text-[9px] text-zinc-500 font-mono mt-1">Ẩn phụ đề/giọng thuyết minh của câu lời dẫn, giữ lại âm thanh gốc của video. Tắt để dùng logic cũ.</span>
                 </div>
               </label>
 

@@ -8,12 +8,37 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Reconfigure stdout and stderr to use UTF-8 encoding to prevent UnicodeEncodeError in subprocesses
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 def log(message):
-    print(message)
-    sys.stdout.flush()
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        try:
+            enc = (sys.stdout.encoding if sys.stdout else None) or 'utf-8'
+            print(str(message).encode(enc, errors='replace').decode(enc))
+        except Exception:
+            pass
+    if sys.stdout:
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 def parse_time_to_seconds(time_str):
     try:
+        if "-->" in time_str:
+            time_str = time_str.split("-->")[0].strip()
         cleaned = time_str.replace(",", ".")
         parts = cleaned.split(":")
         if len(parts) < 3:
@@ -79,6 +104,26 @@ def contains_cjk(text):
             return True
     return False
 
+def is_shot_sub_hidden(shot, idx, hidden_srt_indexes):
+    if not hidden_srt_indexes:
+        return False
+    shot_range = shot.get('range', '')
+    if not shot_range:
+        shot_id = str(shot.get('id', ''))
+        shot_idx = str(idx + 1)
+        return shot_idx in hidden_srt_indexes or shot_id in hidden_srt_indexes
+        
+    try:
+        parts = shot_range.split("-")
+        start_idx = int(parts[0].strip())
+        end_idx = int(parts[1].strip()) if len(parts) > 1 else start_idx
+        for i in range(start_idx, end_idx + 1):
+            if str(i) in hidden_srt_indexes:
+                return True
+    except Exception:
+        pass
+    return False
+
 def wrap_text(text, max_line_len=40):
     if contains_cjk(text):
         # Japanese/cjk character by character split
@@ -119,11 +164,31 @@ def get_fallback_font(text, size=24, font_family='sans-serif'):
     if cache_key in _font_cache:
         return _font_cache[cache_key]
 
-    # Look in both Windows Fonts and User-installed Fonts directories
-    font_dirs = [
+    # Resolve executable or script directory
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        local_font_dir = os.path.join(exe_dir, "fonts")
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # In dev, check resources/fonts under project root first
+        root_dir = os.path.dirname(script_dir)
+        dev_fonts = os.path.join(root_dir, "resources", "fonts")
+        if os.path.exists(dev_fonts):
+            local_font_dir = dev_fonts
+        else:
+            local_font_dir = os.path.join(script_dir, "fonts")
+    
+    log(f"[Font] Resolving font family='{font_family}', size={size}, has_cjk={has_cjk}")
+    log(f"[Font] Local font directory: {local_font_dir} (exists: {os.path.exists(local_font_dir)})")
+    
+    font_dirs = []
+    if os.path.exists(local_font_dir):
+        font_dirs.append(local_font_dir)
+        
+    font_dirs.extend([
         "C:\\Windows\\Fonts",
         os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Microsoft', 'Windows', 'Fonts')
-    ]
+    ])
 
     family_fonts = []
     if font_family == 'serif':
@@ -143,7 +208,8 @@ def get_fallback_font(text, size=24, font_family='sans-serif'):
     elif font_family == 'yumin':
         family_fonts = ["yumin.ttf", "yumindb.ttf"]
     elif font_family == 'bizudgothic':
-        family_fonts = ["BIZ-UDGothicR.ttc", "BIZ-UDGothicB.ttc"]
+        # BIZ-UDGothic is the system name. Bundled files are BIZUDPGothic-Regular.ttf / BIZUDPGothic-Bold.ttf
+        family_fonts = ["BIZUDPGothic-Regular.ttf", "BIZUDPGothic-Bold.ttf", "BIZ-UDGothicR.ttc", "BIZ-UDGothicB.ttc"]
     elif font_family == 'bizudmincho':
         family_fonts = ["BIZ-UDMinchoM.ttc"]
     elif font_family == 'togegothic':
@@ -153,33 +219,66 @@ def get_fallback_font(text, size=24, font_family='sans-serif'):
             "TogeGothicBd.otf", "TogeGothicBd.ttf"
         ]
     else: # sans-serif
-        family_fonts = ["arial.ttf", "calibri.ttf", "segoeui.ttf"]
+        if font_family.lower().endswith(('.ttf', '.otf', '.ttc')):
+            family_fonts = [font_family]
+        else:
+            family_fonts = ["arial.ttf", "calibri.ttf", "segoeui.ttf"]
+
+    # Categorize family_fonts into CJK and non-CJK to prioritize properly
+    cjk_fonts = []
+    non_cjk_fonts = []
+    for f in family_fonts:
+        f_lower = f.lower()
+        if any(cjk in f_lower for cjk in ['gothic', 'mincho', 'meiryo', 'yugoth', 'yumin', 'msmincho', 'msgothic', 'toge', 'mochiy', 'noto', 'zen', 'rocknroll']):
+            cjk_fonts.append(f)
+        elif f_lower.endswith(('.ttf', '.otf', '.ttc')) and font_family.lower().endswith(('.ttf', '.otf', '.ttc')):
+            # Explicitly requested custom font file
+            cjk_fonts.append(f)
+        else:
+            non_cjk_fonts.append(f)
 
     font_paths = []
     
-    cjk_families = {'msgothic', 'meiryo', 'msmincho', 'yugothic', 'yumin', 'bizudgothic', 'bizudmincho', 'togegothic'}
-    if has_cjk and font_family not in cjk_families:
-        if font_family == 'serif':
-            family_fonts = ["yumin.ttf", "msmincho.ttc", "BIZ-UDMinchoM.ttc"] + family_fonts
-        elif font_family == 'monospace':
-            family_fonts = ["msgothic.ttc"] + family_fonts
-        else: # sans-serif/cursive/others
-            family_fonts = ["msgothic.ttc", "meiryo.ttc", "YuGothR.ttc", "BIZ-UDGothicR.ttc"] + family_fonts
-
-    # Prioritize selected family first
-    for d in font_dirs:
-        for f in family_fonts:
-            font_paths.append(os.path.join(d, f))
-
-    # CJK Fallbacks if requested font not found
     if has_cjk:
-        cjk_fallbacks = [
+        # 1. First search user's requested CJK fonts
+        for d in font_dirs:
+            for f in cjk_fonts:
+                path = os.path.join(d, f)
+                if path not in font_paths:
+                    font_paths.append(path)
+                    
+        # 2. Next search all available local CJK fonts
+        local_cjk_fallbacks = []
+        if os.path.exists(local_font_dir):
+            try:
+                for f in os.listdir(local_font_dir):
+                    if f.lower().endswith(('.ttf', '.otf', '.ttc')):
+                        local_cjk_fallbacks.append(f)
+            except Exception as e:
+                log(f"[Font Warning] Failed to list local fonts: {e}")
+                
+        # 3. Next search standard system CJK fonts
+        cjk_fallbacks = local_cjk_fallbacks + [
             "msgothic.ttc", "meiryo.ttc", "msmincho.ttc", 
             "YuGothR.ttc", "yumin.ttf", "BIZ-UDGothicR.ttc"
         ]
         for cf in cjk_fallbacks:
             for d in font_dirs:
                 path = os.path.join(d, cf)
+                if path not in font_paths:
+                    font_paths.append(path)
+                    
+        # 4. Only as a last resort, search non-CJK fonts
+        for d in font_dirs:
+            for f in non_cjk_fonts:
+                path = os.path.join(d, f)
+                if path not in font_paths:
+                    font_paths.append(path)
+    else:
+        # Non-CJK text: prioritize requested fonts, then system defaults
+        for d in font_dirs:
+            for f in family_fonts:
+                path = os.path.join(d, f)
                 if path not in font_paths:
                     font_paths.append(path)
 
@@ -192,15 +291,21 @@ def get_fallback_font(text, size=24, font_family='sans-serif'):
                 font_paths.append(path)
 
     font_obj = None
+    resolved_path = None
     for path in font_paths:
         if os.path.exists(path):
             try:
                 font_obj = ImageFont.truetype(path, size)
+                resolved_path = path
                 break
             except Exception:
                 continue
+                
     if font_obj is None:
         font_obj = ImageFont.load_default()
+        log("[Font] Failed to load any custom/system fonts, falling back to default PIL font.")
+    else:
+        log(f"[Font] Successfully loaded font from: {resolved_path}")
         
     _font_cache[cache_key] = font_obj
     return font_obj
@@ -548,7 +653,21 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
     overlay_rgb = overlay_np[:, :, :3]
     overlay_bgr = cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
     
-    return overlay_bgr, alpha_3d
+    if bg_full_width and bg_opacity > 0:
+        y_min = box_y1
+        y_max = box_y2
+    else:
+        pad_y = int(height * 0.015) if bg_opacity > 0 else 0
+        y_min = start_y - pad_y - outline_width
+        y_max = curr_y + pad_y + outline_width
+        
+    y_min = int(max(0, y_min))
+    y_max = int(min(height, y_max))
+    if y_min >= y_max:
+        y_min = 0
+        y_max = height
+        
+    return overlay_bgr, alpha_3d, y_min, y_max
 
 
 def create_ken_burns_video(image_path, duration, output_path, width=1280, height=720, fps=24):
@@ -614,90 +733,69 @@ def process_video_clip(video_path, target_duration, output_path, width=1280, hei
             raise Exception("Cannot open video")
             
         target_frames = int(target_duration * fps)
-        out_frames = []
-        
-        if target_duration < 8.0:
-            # Trim/pad to maintain original speed: we only need at most target_frames
-            frames = []
-            while len(frames) < target_frames:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame_resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                frames.append(frame_resized)
-            cap.release()
+        if target_frames <= 0:
+            target_frames = 1
             
-            n_video = len(frames)
-            if n_video == 0:
-                raise Exception("Empty video clip")
-                
+        if target_duration < 8.0:
+            # Trim/pad to maintain original speed: O(1) memory
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            last_frame = None
             for f_idx in range(target_frames):
-                if f_idx < n_video:
-                    out_frames.append(frames[f_idx])
+                ret, frame = cap.read()
+                if ret:
+                    last_frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                
+                if last_frame is not None:
+                    out.write(last_frame)
                 else:
-                    out_frames.append(frames[-1])
+                    raise Exception("Empty video clip or read failure")
+            out.release()
+            cap.release()
+            return True
         else:
-            # Interpolation speed stretch: mapping frames on-demand
+            # Interpolation speed stretch: O(1) memory
             n_video = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             if n_video <= 0:
-                # Fallback: read all frames sequentially but defer resizing to save RAM
-                all_frames = []
+                # Count frames manually if metadata is missing
+                n_video = 0
                 while True:
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+                    n_video += 1
+                cap.release()
+                cap = cv2.VideoCapture(video_path)
+                
+            if n_video <= 0:
+                raise Exception("Empty video clip or cannot determine frame count")
+                
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            current_frame = None
+            current_src_idx = -1
+            
+            for f_idx in range(target_frames):
+                needed_src_idx = int(f_idx * (n_video / target_frames))
+                needed_src_idx = min(needed_src_idx, n_video - 1)
+                
+                # Advance source read pointer sequentially
+                while current_src_idx < needed_src_idx:
                     ret, frame = cap.read()
                     if not ret:
                         break
-                    all_frames.append(frame)
-                cap.release()
-                n_video = len(all_frames)
-                if n_video == 0:
-                    raise Exception("Empty video clip")
+                    current_src_idx += 1
+                    current_frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
                 
-                for f_idx in range(target_frames):
-                    src_idx = int(f_idx * (n_video / target_frames))
-                    src_idx = min(src_idx, n_video - 1)
-                    out_frames.append(cv2.resize(all_frames[src_idx], (width, height), interpolation=cv2.INTER_LINEAR))
-            else:
-                # Metadata is available, read sequentially and select frame indices on-demand
-                needed_indices = {}
-                for f_idx in range(target_frames):
-                    src_idx = int(f_idx * (n_video / target_frames))
-                    src_idx = min(src_idx, n_video - 1)
-                    if src_idx not in needed_indices:
-                        needed_indices[src_idx] = []
-                    needed_indices[src_idx].append(f_idx)
-                
-                out_frames = [None] * target_frames
-                current_idx = 0
-                max_needed = max(needed_indices.keys()) if needed_indices else 0
-                
-                while current_idx <= max_needed:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    if current_idx in needed_indices:
-                        frame_resized = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                        for f_idx in needed_indices[current_idx]:
-                            out_frames[f_idx] = frame_resized
-                    current_idx += 1
-                cap.release()
-                
-                # Fallback in case of missing frames/early EOF
-                last_valid_frame = None
-                for i in range(target_frames):
-                    if out_frames[i] is not None:
-                        last_valid_frame = out_frames[i]
-                    elif last_valid_frame is not None:
-                        out_frames[i] = last_valid_frame
-                
-                if last_valid_frame is None:
+                if current_frame is not None:
+                    out.write(current_frame)
+                else:
                     raise Exception("Empty video clip or read failure")
-                    
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        for frame in out_frames:
-            out.write(frame)
-        out.release()
-        return True
+            out.release()
+            cap.release()
+            return True
     except Exception as e:
         log(f"[Error] process_video_clip failed: {e}")
         return False
@@ -815,6 +913,55 @@ def extract_audio(video_path, output_wav_path, ffmpeg_path='ffmpeg'):
             pass
     return False
 
+def extract_natural_audio(video_path, target_duration, output_wav_path, ffmpeg_path='ffmpeg'):
+    try:
+        orig_dur = get_audio_duration(video_path, ffmpeg_path)
+        if orig_dur <= 0:
+            return False
+            
+        if target_duration < 8.0:
+            # Trim/pad to maintain original speed
+            cmd = [
+                ffmpeg_path, '-y', '-i', video_path,
+                '-vn', '-filter_complex', f"[0:a]atrim=0:{target_duration:.3f},apad[aout]",
+                '-map', '[aout]', '-t', f"{target_duration:.3f}",
+                '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
+                output_wav_path
+            ]
+        else:
+            # Speed stretch using atempo
+            speed = orig_dur / target_duration
+            filters = []
+            temp_speed = speed
+            while temp_speed > 2.0:
+                filters.append("atempo=2.0")
+                temp_speed /= 2.0
+            while temp_speed < 0.5:
+                filters.append("atempo=0.5")
+                temp_speed /= 0.5
+            filters.append(f"atempo={temp_speed:.4f}")
+            filter_str = ",".join(filters)
+            
+            cmd = [
+                ffmpeg_path, '-y', '-i', video_path,
+                '-vn', '-filter_complex', f"[0:a]{filter_str}[aout]",
+                '-map', '[aout]', '-t', f"{target_duration:.3f}",
+                '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2',
+                output_wav_path
+            ]
+            
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if res.returncode == 0 and os.path.exists(output_wav_path) and os.path.getsize(output_wav_path) > 0:
+            return True
+    except Exception as e:
+        log(f"[Warning] Failed to extract natural audio from {video_path}: {e}")
+    if os.path.exists(output_wav_path):
+        try:
+            os.remove(output_wav_path)
+        except Exception:
+            pass
+    return False
+
 def compile_project(config_path, srt_path, output_dir):
     log("=== VEO3 Compiler Version 1.1.1 ===")
     log(f"Config path: {config_path}")
@@ -836,6 +983,13 @@ def compile_project(config_path, srt_path, output_dir):
         log(f"FATAL: Cannot read config file: {e}")
         return 1
 
+    use_ai_director = project.get('useAiDirector', True)
+    if not use_ai_director:
+        hidden_srt_indexes = []
+        log("[AI Director] Disabled by user config. Forcing hiddenSrtIndexes to empty list so all subtitles are shown and all voice files are generated/played.")
+    else:
+        hidden_srt_indexes = [str(x) for x in project.get('hiddenSrtIndexes', [])]
+        log(f"[AI Director] Enabled. Active hidden SRT indexes: {hidden_srt_indexes}")
     export_mode = project.get('exportMode', 'mixed')
     burn_subtitles = project.get('style', {}).get('burnSubtitles', True)
 
@@ -1176,349 +1330,496 @@ def compile_project(config_path, srt_path, output_dir):
         if os.path.exists(clip):
             os.remove(clip)
 
-    # Step 3: Burn in subtitles frame-by-frame using Pillow
-    log("PROGRESS: 75")
-    subtitled_video_path = os.path.join(output_dir, "stitched_subtitled.mp4")
-    
-    if not burn_subtitles:
-        log("burnSubtitles is False. Skipping subtitle rendering.")
-        import shutil
-        shutil.copy2(concat_video_path, subtitled_video_path)
-    else:
-        log("Burning subtitles frame-by-frame...")
-        cap = cv2.VideoCapture(concat_video_path)
-        if not cap.isOpened():
-            log("FATAL: Cannot open concatenated video.")
-            return 1
-            
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or target_fps
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(subtitled_video_path, fourcc, fps, (width, height))
-        
-        # srt_blocks is already parsed and mapped early
-        pass
-                
-        frame_idx = 0
-        current_overlay_text = None
-        current_overlay_bgr = None
-        current_overlay_alpha = None
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-                
-            v_time = frame_idx / fps
-            active_text = ""
-            for block in srt_blocks:
-                if block['start'] <= v_time <= block['end']:
-                    active_text = block['text']
-                    break
-            
-            if active_text:
-                if active_text != current_overlay_text:
-                    current_overlay_text = active_text
-                    current_overlay_bgr, current_overlay_alpha = create_subtitle_overlay(
-                        width, height,
-                        active_text,
-                        font_size=font_size,
-                        font_family=font_family,
-                        position=vertical_align,
-                        bg_opacity=bg_opacity,
-                        outline_width=outline_width,
-                        outline_color=outline_color,
-                        text_color=text_color,
-                        max_line_len=max_line_length,
-                        bg_full_width=bg_full_width,
-                        bg_height=bg_height,
-                        bottom_margin=bottom_margin,
-                        bg_color=bg_color
-                    )
-                # Ultra fast NumPy vectorized blending
-                frame = (frame * (1.0 - current_overlay_alpha) + current_overlay_bgr * current_overlay_alpha).astype(np.uint8)
-            else:
-                current_overlay_text = None
-                current_overlay_bgr = None
-                current_overlay_alpha = None
-                
-            out.write(frame)
-            frame_idx += 1
-            
-            if total_frames > 0 and frame_idx % 30 == 0:
-                percent = int(70 + (frame_idx / total_frames) * 10)
-                log(f"PROGRESS: {percent}")
-                
-        cap.release()
-        out.release()
-    
-    if os.path.exists(concat_video_path):
-        os.remove(concat_video_path)
-    concat_video_path = subtitled_video_path
-
-    # Step 4: Audio Mixing (Voices chunking and multi-segment BGM suggestions)
-    log("PROGRESS: 80")
-    log("Processing audio overlays (Voices and Multi-segment BGM)...")
-
-    # Calculate total time
-    total_time_accumulated = sum(shot_durations) + intro_dur + outro_dur
- 
-    # srt_blocks is already parsed and mapped early
-    unique_orig_ids = sorted(list(set(b['orig_id'] for b in srt_blocks)))
- 
-    # Get naturally sorted local voice files
-    voice_dir = os.path.join(output_dir, 'voice')
-    local_voice_files = []
-    if os.path.exists(voice_dir):
-        for f in os.listdir(voice_dir):
-            ext = os.path.splitext(f)[1].lower()
-            if ext in ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac']:
-                local_voice_files.append(os.path.join(voice_dir, f))
- 
-    import re
-    def natural_sort_key(filepath):
-        filename = os.path.basename(filepath)
-        match = re.search(r'\d+', filename)
-        if match:
-            return (int(match.group()), filename)
-        return (float('inf'), filename)
- 
-    local_voice_files.sort(key=natural_sort_key)
- 
-    voiceover_files = []
     downloaded_temps = []
- 
-    if local_voice_files:
-        log(f"Found {len(local_voice_files)} voice files in voice/. Mapping to {len(unique_orig_ids)} unique original IDs.")
-        for i, orig_id in enumerate(unique_orig_ids):
-            if i >= len(local_voice_files):
-                log(f"[Warning] More unique original IDs than voice files. Skipping orig_id {orig_id}.")
-                break
-            matching_blocks = [b for b in srt_blocks if b.get('orig_id') == orig_id]
-            if not matching_blocks:
-                continue
-            first_block = min(matching_blocks, key=lambda b: b['start'])
-            start_time = first_block['start']
-            voiceover_files.append((local_voice_files[i], int(start_time * 1000)))
-    else:
-        # Fallback to shot-based voice files if voice/ folder is empty
-        log("[Warning] No voice files found in voice/ directory. Falling back to shot voice configurations.")
+    mixed_audio_path = os.path.join(output_dir, "mixed_audio.mp3")
+
+    try:
+        # Step 3: Audio Mixing (Voices chunking and multi-segment BGM suggestions)
+        log("PROGRESS: 75")
+        log("Processing audio overlays (Voices and Multi-segment BGM)...")
+
+        # Calculate total time
+        total_time_accumulated = sum(shot_durations) + intro_dur + outro_dur
+     
+        # srt_blocks is already parsed and mapped early
+        unique_orig_ids = sorted(list(set(b['orig_id'] for b in srt_blocks)))
+     
+        # Get naturally sorted local voice files
+        voice_dir = os.path.join(output_dir, 'voice')
+        local_voice_files = []
+        if os.path.exists(voice_dir):
+            for f in os.listdir(voice_dir):
+                ext = os.path.splitext(f)[1].lower()
+                if ext in ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac']:
+                    local_voice_files.append(os.path.join(voice_dir, f))
+     
+        import re
+        def natural_sort_key(filepath):
+            filename = os.path.basename(filepath)
+            match = re.search(r'\d+', filename)
+            if match:
+                return (int(match.group()), filename)
+            return (float('inf'), filename)
+     
+        local_voice_files.sort(key=natural_sort_key)
+     
+        voiceover_files = []
+     
+        if local_voice_files:
+            log(f"Found {len(local_voice_files)} voice files in voice/. Mapping to {len(unique_orig_ids)} unique original IDs.")
+            for i, orig_id in enumerate(unique_orig_ids):
+                if i >= len(local_voice_files):
+                    log(f"[Warning] More unique original IDs than voice files. Skipping orig_id {orig_id}.")
+                    break
+                
+                # Check if this original ID is hidden
+                if str(orig_id) in hidden_srt_indexes:
+                    log(f"Skipping voice file for hidden orig_id: {orig_id}")
+                    continue
+                    
+                matching_blocks = [b for b in srt_blocks if b.get('orig_id') == orig_id]
+                if not matching_blocks:
+                    continue
+                first_block = min(matching_blocks, key=lambda b: b['start'])
+                start_time = first_block['start']
+                voiceover_files.append((local_voice_files[i], int(start_time * 1000)))
+        else:
+            # Fallback to shot-based voice files if voice/ folder is empty
+            log("[Warning] No voice files found in voice/ directory. Falling back to shot voice configurations.")
+            accumulated = 0.0
+            for idx, shot in enumerate(shots):
+                duration = shot_durations[idx]
+                voice_file = shot.get('voiceUrl') or shot.get('voicePath')
+                if not voice_file:
+                    local_cand_mp3 = os.path.join(output_dir, "voice", f"voice_{shot.get('id')}.mp3")
+                    local_cand_wav = os.path.join(output_dir, "voice", f"voice_{shot.get('id')}.wav")
+                    if os.path.exists(local_cand_mp3):
+                        voice_file = local_cand_mp3
+                    elif os.path.exists(local_cand_wav):
+                        voice_file = local_cand_wav
+     
+                if voice_file:
+                    v_start_time = accumulated
+                    if intro_insert_idx is not None and idx >= intro_insert_idx:
+                        v_start_time += intro_dur
+                    
+                    # Check if this shot covers a hidden subtitle block
+                    if is_shot_sub_hidden(shot, idx, hidden_srt_indexes):
+                        log(f"Skipping fallback voice file for hidden shot {idx+1}")
+                        accumulated += duration
+                        continue
+                    
+                    if voice_file.startswith('http'):
+                        local_voice = os.path.join(output_dir, f"voice_temp_{idx:03d}.mp3")
+                        if download_file(voice_file, local_voice):
+                            voiceover_files.append((local_voice, int(v_start_time * 1000)))
+                            downloaded_temps.append(local_voice)
+                    elif os.path.exists(voice_file):
+                        voiceover_files.append((voice_file, int(v_start_time * 1000)))
+                accumulated += duration
+
+        # Extract and mix natural audio for hidden video segments
+        log("Processing natural audio overlays for hidden narration clips...")
         accumulated = 0.0
         for idx, shot in enumerate(shots):
             duration = shot_durations[idx]
-            voice_file = shot.get('voiceUrl') or shot.get('voicePath')
-            if not voice_file:
-                local_cand_mp3 = os.path.join(output_dir, "voice", f"voice_{shot.get('id')}.mp3")
-                local_cand_wav = os.path.join(output_dir, "voice", f"voice_{shot.get('id')}.wav")
-                if os.path.exists(local_cand_mp3):
-                    voice_file = local_cand_mp3
-                elif os.path.exists(local_cand_wav):
-                    voice_file = local_cand_wav
- 
-            if voice_file:
-                v_start_time = accumulated
-                if intro_insert_idx is not None and idx >= intro_insert_idx:
-                    v_start_time += intro_dur
+            
+            # Check if shot's subtitle is hidden
+            is_hidden = is_shot_sub_hidden(shot, idx, hidden_srt_indexes)
+            
+            if is_hidden:
+                # Find original video source
+                video_source = find_local_asset(output_dir, idx + 1, 'videos')
+                if not video_source:
+                    video_url = shot.get('videoUrl')
+                    if video_url:
+                        if video_url.startswith('http'):
+                            video_source = os.path.join(output_dir, f"raw_video_{idx:03d}.mp4")
+                        elif os.path.exists(video_url):
+                            video_source = video_url
+                        else:
+                            cand = os.path.join(output_dir, video_url)
+                            if os.path.exists(cand):
+                                video_source = cand
                 
-                if voice_file.startswith('http'):
-                    local_voice = os.path.join(output_dir, f"voice_temp_{idx:03d}.mp3")
-                    if download_file(voice_file, local_voice):
-                        voiceover_files.append((local_voice, int(v_start_time * 1000)))
-                        downloaded_temps.append(local_voice)
-                elif os.path.exists(voice_file):
-                    voiceover_files.append((voice_file, int(v_start_time * 1000)))
+                # If video_source exists, extract natural audio
+                if video_source and os.path.exists(video_source):
+                    v_start_time = accumulated
+                    if intro_insert_idx is not None and idx >= intro_insert_idx:
+                        v_start_time += intro_dur
+                    
+                    natural_wav = os.path.join(output_dir, f"temp_natural_{idx}.wav")
+                    if extract_natural_audio(video_source, duration, natural_wav, ffmpeg_path):
+                        voiceover_files.append((natural_wav, int(v_start_time * 1000)))
+                        downloaded_temps.append(natural_wav)
+                        log(f"Extracted and queued natural audio for shot {idx+1} at {v_start_time:.2f}s")
+                        
             accumulated += duration
 
-    # Extract and mix in intro/outro audio if available
-    intro_audio_wav = None
-    if intro_video_path and intro_dur > 0 and intro_insert_idx is not None:
-        wav_path = os.path.join(output_dir, "temp_intro_audio.wav")
-        if extract_audio(intro_video_path, wav_path, ffmpeg_path):
-            intro_audio_wav = wav_path
-            voiceover_files.append((intro_audio_wav, int(insert_time_offset * 1000)))
-            downloaded_temps.append(intro_audio_wav)
-            log(f"Extracted and queued intro audio for mixing at {insert_time_offset:.2f}s")
- 
-    outro_audio_wav = None
-    if outro_video_path and outro_dur > 0:
-        wav_path = os.path.join(output_dir, "temp_outro_audio.wav")
-        if extract_audio(outro_video_path, wav_path, ffmpeg_path):
-            outro_audio_wav = wav_path
-            voiceover_files.append((outro_audio_wav, int((sum(shot_durations) + intro_dur) * 1000)))
-            downloaded_temps.append(outro_audio_wav)
-            log(f"Extracted and queued outro audio for mixing at {(sum(shot_durations) + intro_dur):.2f}s")
- 
-    # Parse BGM suggestions
-    bgm_suggestions = project.get('bgmSuggestions', [])
-    valid_bgm_inputs = []
-    
-    for sugg in bgm_suggestions:
-        audio_file = sugg.get('audioFile')
-        if audio_file:
-            bgm_path = os.path.join(output_dir, "bgm", audio_file)
+        # Extract and mix in intro/outro audio if available
+        intro_audio_wav = None
+        if intro_video_path and intro_dur > 0 and intro_insert_idx is not None:
+            wav_path = os.path.join(output_dir, "temp_intro_audio.wav")
+            if extract_audio(intro_video_path, wav_path, ffmpeg_path):
+                intro_audio_wav = wav_path
+                voiceover_files.append((intro_audio_wav, int(insert_time_offset * 1000)))
+                downloaded_temps.append(intro_audio_wav)
+                log(f"Extracted and queued intro audio for mixing at {insert_time_offset:.2f}s")
+     
+        outro_audio_wav = None
+        if outro_video_path and outro_dur > 0:
+            wav_path = os.path.join(output_dir, "temp_outro_audio.wav")
+            if extract_audio(outro_video_path, wav_path, ffmpeg_path):
+                outro_audio_wav = wav_path
+                voiceover_files.append((outro_audio_wav, int((sum(shot_durations) + intro_dur) * 1000)))
+                downloaded_temps.append(outro_audio_wav)
+                log(f"Extracted and queued outro audio for mixing at {(sum(shot_durations) + intro_dur):.2f}s")
+     
+        # Parse BGM suggestions
+        bgm_suggestions = project.get('bgmSuggestions', [])
+        valid_bgm_inputs = []
+        
+        for sugg in bgm_suggestions:
+            audio_file = sugg.get('audioFile')
+            if audio_file:
+                bgm_path = os.path.join(output_dir, "bgm", audio_file)
+                if os.path.exists(bgm_path):
+                    start_sec, dur_sec = parse_bgm_time_range(sugg.get('timeRange', ''))
+                    
+                    # Shift BGM suggestions if intro is inserted
+                    if intro_insert_idx is not None and intro_dur > 0:
+                        if start_sec >= insert_time_offset:
+                            start_sec += intro_dur
+                        elif start_sec < insert_time_offset and (start_sec + dur_sec) > insert_time_offset:
+                            dur_sec += intro_dur
+                    
+                    # Extend BGM suggestion if outro is present and this segment ends at the very end
+                    if outro_dur > 0 and (start_sec + dur_sec) >= (sum(shot_durations) + intro_dur - 0.1):
+                        dur_sec += outro_dur
+     
+                    valid_bgm_inputs.append({
+                        'path': bgm_path,
+                        'start_ms': int(start_sec * 1000),
+                        'dur_sec': dur_sec,
+                        'volume_db': sugg.get('volumeDb', -18)
+                    })
+     
+        # Fallback to single BGM path if suggestions are empty
+        if not valid_bgm_inputs and project.get('bgmPath'):
+            bgm_path = project.get('bgmPath')
             if os.path.exists(bgm_path):
-                start_sec, dur_sec = parse_bgm_time_range(sugg.get('timeRange', ''))
-                
-                # Shift BGM suggestions if intro is inserted
-                if intro_insert_idx is not None and intro_dur > 0:
-                    if start_sec >= insert_time_offset:
-                        start_sec += intro_dur
-                    elif start_sec < insert_time_offset and (start_sec + dur_sec) > insert_time_offset:
-                        dur_sec += intro_dur
-                
-                # Extend BGM suggestion if outro is present and this segment ends at the very end
-                if outro_dur > 0 and (start_sec + dur_sec) >= (sum(shot_durations) + intro_dur - 0.1):
-                    dur_sec += outro_dur
- 
                 valid_bgm_inputs.append({
                     'path': bgm_path,
-                    'start_ms': int(start_sec * 1000),
-                    'dur_sec': dur_sec,
-                    'volume_db': sugg.get('volumeDb', -18)
+                    'start_ms': 0,
+                    'dur_sec': total_time_accumulated,
+                    'volume_db': -18
                 })
- 
-    # Fallback to single BGM path if suggestions are empty
-    if not valid_bgm_inputs and project.get('bgmPath'):
-        bgm_path = project.get('bgmPath')
-        if os.path.exists(bgm_path):
-            valid_bgm_inputs.append({
-                'path': bgm_path,
-                'start_ms': 0,
-                'dur_sec': total_time_accumulated,
-                'volume_db': -18
-            })
 
-    mixed_audio_path = os.path.join(output_dir, "mixed_audio.mp3")
-    audio_mix_ok = False
+        audio_mix_ok = False
 
-    if voiceover_files or valid_bgm_inputs:
-        # Group voices if count > 50 to avoid WinError 206
-        chunk_files = []
-        if len(voiceover_files) > 50:
-            voice_chunks = [voiceover_files[i:i+50] for i in range(0, len(voiceover_files), 50)]
-            for chunk_idx, chunk in enumerate(voice_chunks):
-                chunk_wave_path = os.path.join(output_dir, f"temp_voice_chunk_{chunk_idx}.wav")
-                chunk_inputs = ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']
-                chunk_filter = ""
-                for v_idx, (v_path, delay) in enumerate(chunk):
-                    chunk_inputs.extend(['-i', v_path])
-                    chunk_filter += f"[{v_idx+1}:a]aresample=44100,adelay={delay}|{delay}[v{v_idx}];"
-                
-                chunk_mix_str = "[0:a]"
-                for v_idx in range(len(chunk)):
-                    chunk_mix_str += f"[v{v_idx}]"
-                chunk_filter += f"{chunk_mix_str}amix=inputs={len(chunk)+1}:duration=first:dropout_transition=2:normalize=0[aout]"
-                
-                chunk_cmd = [ffmpeg_path, '-y'] + chunk_inputs + [
-                    '-filter_complex', chunk_filter,
-                    '-map', '[aout]',
-                    '-t', f"{total_time_accumulated:.3f}",
-                    chunk_wave_path
-                ]
-                
-                subprocess.run(chunk_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                chunk_files.append(chunk_wave_path)
-        
-        # Merge voice chunks and BGM suggestion inputs
-        audio_inputs = []
-        filter_complex = ""
-        mix_inputs = 0
-        
-        audio_inputs.extend(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo'])
-        
-        if len(voiceover_files) > 50:
-            for idx, c_path in enumerate(chunk_files):
-                audio_inputs.extend(['-i', c_path])
-                filter_complex += f"[{idx+1}:a]aresample=44100[c{idx}];"
-                mix_inputs += 1
-        else:
-            for idx, (v_path, delay) in enumerate(voiceover_files):
-                audio_inputs.extend(['-i', v_path])
-                filter_complex += f"[{idx+1}:a]aresample=44100,adelay={delay}|{delay}[v{idx}];"
-                mix_inputs += 1
-                
-        # Add multiple BGM suggestion inputs
-        bgm_labels = []
-        for idx, bgm_in in enumerate(valid_bgm_inputs):
-            bgm_input_idx = mix_inputs + 1
-            audio_inputs.extend(['-stream_loop', '-1', '-i', bgm_in['path']])
-            filter_complex += f"[{bgm_input_idx}:a]atrim=0:{bgm_in['dur_sec']:.3f},adelay={bgm_in['start_ms']}|{bgm_in['start_ms']},volume={bgm_in['volume_db']}dB[bgm{idx}];"
-            bgm_labels.append(f"[bgm{idx}]")
-            mix_inputs += 1
-
-        # Mix strings
-        mix_str = "[0:a]"
-        if len(voiceover_files) > 50:
-            for idx in range(len(chunk_files)):
-                mix_str += f"[c{idx}]"
-        else:
-            for idx in range(len(voiceover_files)):
-                mix_str += f"[v{idx}]"
-        
-        for idx in range(len(valid_bgm_inputs)):
-            mix_str += f"[bgm{idx}]"
+        if voiceover_files or valid_bgm_inputs:
+            # Group voices if count > 50 to avoid WinError 206
+            chunk_files = []
+            if len(voiceover_files) > 50:
+                voice_chunks = [voiceover_files[i:i+50] for i in range(0, len(voiceover_files), 50)]
+                for chunk_idx, chunk in enumerate(voice_chunks):
+                    chunk_wave_path = os.path.join(output_dir, f"temp_voice_chunk_{chunk_idx}.wav")
+                    chunk_inputs = ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']
+                    chunk_filter = ""
+                    for v_idx, (v_path, delay) in enumerate(chunk):
+                        chunk_inputs.extend(['-i', v_path])
+                        chunk_filter += f"[{v_idx+1}:a]aresample=44100,adelay={delay}|{delay}[v{v_idx}];"
+                    
+                    chunk_mix_str = "[0:a]"
+                    for v_idx in range(len(chunk)):
+                        chunk_mix_str += f"[v{v_idx}]"
+                    chunk_filter += f"{chunk_mix_str}amix=inputs={len(chunk)+1}:duration=first:dropout_transition=2:normalize=0[aout]"
+                    
+                    chunk_cmd = [ffmpeg_path, '-y'] + chunk_inputs + [
+                        '-filter_complex', chunk_filter,
+                        '-map', '[aout]',
+                        '-t', f"{total_time_accumulated:.3f}",
+                        chunk_wave_path
+                    ]
+                    
+                    subprocess.run(chunk_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    chunk_files.append(chunk_wave_path)
             
-        filter_complex += f"{mix_str}amix=inputs={mix_inputs+1}:duration=first:dropout_transition=2:normalize=0[aout]"
-        
-        audio_mix_cmd = [ffmpeg_path, '-y'] + audio_inputs + [
-            '-filter_complex', filter_complex,
-            '-map', '[aout]',
-            '-t', f"{total_time_accumulated:.3f}",
-            mixed_audio_path
-        ]
-        
-        try:
-            subprocess.run(audio_mix_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            audio_mix_ok = True
-        except Exception as e:
-            log(f"[Warning] Audio mixing failed: {e}")
-            if os.path.exists(mixed_audio_path):
-                os.remove(mixed_audio_path)
-        finally:
-            # Cleanup temp voice chunks
-            for c_path in chunk_files:
-                if os.path.exists(c_path):
-                    os.remove(c_path)
+            # Merge voice chunks and BGM suggestion inputs
+            audio_inputs = []
+            filter_complex = ""
+            mix_inputs = 0
+            
+            audio_inputs.extend(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo'])
+            
+            if len(voiceover_files) > 50:
+                for idx, c_path in enumerate(chunk_files):
+                    audio_inputs.extend(['-i', c_path])
+                    filter_complex += f"[{idx+1}:a]aresample=44100[c{idx}];"
+                    mix_inputs += 1
+            else:
+                for idx, (v_path, delay) in enumerate(voiceover_files):
+                    audio_inputs.extend(['-i', v_path])
+                    filter_complex += f"[{idx+1}:a]aresample=44100,adelay={delay}|{delay}[v{idx}];"
+                    mix_inputs += 1
+                    
+            # Add multiple BGM suggestion inputs
+            bgm_labels = []
+            for idx, bgm_in in enumerate(valid_bgm_inputs):
+                bgm_input_idx = mix_inputs + 1
+                audio_inputs.extend(['-stream_loop', '-1', '-i', bgm_in['path']])
+                filter_complex += f"[{bgm_input_idx}:a]atrim=0:{bgm_in['dur_sec']:.3f},adelay={bgm_in['start_ms']}|{bgm_in['start_ms']},volume={bgm_in['volume_db']}dB[bgm{idx}];"
+                bgm_labels.append(f"[bgm{idx}]")
+                mix_inputs += 1
 
-    # Step 5: Merge subtitled video and mixed audio
-    log("PROGRESS: 90")
-    log("Compiling final video output...")
-    final_output_path = os.path.join(output_dir, "final_compiled_video.mp4")
-    
-    # Check for NVIDIA NVENC hardware acceleration support
-    use_nvenc = check_nvenc(ffmpeg_path)
-    if use_nvenc:
-        log("GPU Hardware Acceleration (h264_nvenc) is available. Using GPU for final compilation.")
-        v_codec = ['-c:v', 'h264_nvenc']
-    else:
-        log("GPU acceleration not available or failed testing. Using CPU encoding with optimized fast preset.")
-        v_codec = ['-c:v', 'libx264', '-preset', 'veryfast']
+            # Mix strings
+            mix_str = "[0:a]"
+            if len(voiceover_files) > 50:
+                for idx in range(len(chunk_files)):
+                    mix_str += f"[c{idx}]"
+            else:
+                for idx in range(len(voiceover_files)):
+                    mix_str += f"[v{idx}]"
+            
+            for idx in range(len(valid_bgm_inputs)):
+                mix_str += f"[bgm{idx}]"
+                
+            filter_complex += f"{mix_str}amix=inputs={mix_inputs+1}:duration=first:dropout_transition=2:normalize=0[aout]"
+            
+            audio_mix_cmd = [ffmpeg_path, '-y'] + audio_inputs + [
+                '-filter_complex', filter_complex,
+                '-map', '[aout]',
+                '-t', f"{total_time_accumulated:.3f}",
+                mixed_audio_path
+            ]
+            
+            try:
+                subprocess.run(audio_mix_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                audio_mix_ok = True
+            except Exception as e:
+                log(f"[Warning] Audio mixing failed: {e}")
+                if os.path.exists(mixed_audio_path):
+                    os.remove(mixed_audio_path)
+            finally:
+                # Cleanup temp voice chunks
+                for c_path in chunk_files:
+                    if os.path.exists(c_path):
+                        os.remove(c_path)
 
-    merge_cmd = [ffmpeg_path, '-y', '-i', concat_video_path]
-    if audio_mix_ok:
-        merge_cmd.extend(['-i', mixed_audio_path])
-        merge_cmd.extend(['-map', '0:v', '-map', '1:a'] + v_codec + ['-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k'])
-    else:
-        merge_cmd.extend(v_codec + ['-pix_fmt', 'yuv420p'])
+        # Step 4: Burn in subtitles and merge video & audio in a single pass
+        log("PROGRESS: 85")
+        final_output_path = os.path.join(output_dir, "final_compiled_video.mp4")
 
-    merge_cmd.extend(['-shortest', final_output_path])
+        if not burn_subtitles:
+            log("burnSubtitles is False. Skipping subtitle rendering. Merging directly...")
+            # Check for NVIDIA NVENC hardware acceleration support
+            use_nvenc = check_nvenc(ffmpeg_path)
+            if use_nvenc:
+                log("GPU Hardware Acceleration (h264_nvenc) is available. Using GPU for final compilation.")
+                v_codec = ['-c:v', 'h264_nvenc']
+            else:
+                log("GPU acceleration not available or failed testing. Using CPU encoding with optimized fast preset.")
+                v_codec = ['-c:v', 'libx264', '-preset', 'veryfast']
 
-    try:
-        subprocess.run(merge_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except Exception as e:
-        log(f"FATAL: Final video compilation failed: {e}")
-        return 1
+            merge_cmd = [ffmpeg_path, '-y', '-i', concat_video_path]
+            if audio_mix_ok:
+                merge_cmd.extend(['-i', mixed_audio_path])
+                merge_cmd.extend(['-map', '0:v', '-map', '1:a'] + v_codec + ['-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k'])
+            else:
+                merge_cmd.extend(v_codec + ['-pix_fmt', 'yuv420p'])
+
+            merge_cmd.extend(['-shortest', final_output_path])
+            
+            try:
+                subprocess.run(merge_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except Exception as e:
+                log(f"FATAL: Final video compilation failed: {e}")
+                return 1
+        else:
+            log("Burning subtitles and encoding final video in a single pass...")
+            cap = cv2.VideoCapture(concat_video_path)
+            if not cap.isOpened():
+                log("FATAL: Cannot open concatenated video.")
+                return 1
+                
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS) or target_fps
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Check for NVIDIA NVENC hardware acceleration support
+            use_nvenc = check_nvenc(ffmpeg_path)
+            if use_nvenc:
+                log("GPU Hardware Acceleration (h264_nvenc) is available. Using GPU for final compilation.")
+                v_codec = ['-c:v', 'h264_nvenc']
+            else:
+                log("GPU acceleration not available or failed testing. Using CPU encoding with optimized fast preset.")
+                v_codec = ['-c:v', 'libx264', '-preset', 'veryfast']
+                
+            # Build FFmpeg command for piped input
+            ffmpeg_cmd = [
+                ffmpeg_path, '-y',
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-pix_fmt', 'bgr24',
+                '-s', f"{width}x{height}",
+                '-r', f"{fps}",
+                '-i', '-',  # Read video from stdin
+            ]
+            if audio_mix_ok:
+                ffmpeg_cmd.extend(['-i', mixed_audio_path])
+                ffmpeg_cmd.extend(['-map', '0:v', '-map', '1:a'] + v_codec + ['-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k'])
+            else:
+                ffmpeg_cmd.extend(v_codec + ['-pix_fmt', 'yuv420p'])
+                
+            ffmpeg_cmd.extend(['-shortest', final_output_path])
+            
+            # Open log file to avoid pipe blocking on stderr
+            ffmpeg_log_path = os.path.join(output_dir, "ffmpeg_burn_log.txt")
+            log_file = open(ffmpeg_log_path, 'wb')
+            
+            try:
+                # Start FFmpeg subprocess
+                process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=log_file,
+                    stderr=log_file
+                )
+            except Exception as e:
+                log(f"FATAL: Failed to start FFmpeg subprocess: {e}")
+                log_file.close()
+                cap.release()
+                return 1
+                
+            # Precompute O(1) active_texts list
+            max_possible_frames = max(total_frames, int(total_time_accumulated * fps) + 1000)
+            active_texts = [""] * max_possible_frames
+            
+            # Sort srt_blocks by start time just to be sure
+            srt_blocks.sort(key=lambda x: x['start'])
+            
+            for block in srt_blocks:
+                orig_id_str = str(block.get('orig_id', ''))
+                block_idx_str = str(block['index'])
+                if orig_id_str in hidden_srt_indexes or block_idx_str in hidden_srt_indexes:
+                    continue
+                    
+                start_frame = max(0, int(block['start'] * fps))
+                end_frame = min(max_possible_frames - 1, int(block['end'] * fps))
+                for f in range(start_frame, end_frame + 1):
+                    active_texts[f] = block['text']
+                    
+            frame_idx = 0
+            current_overlay_text = None
+            current_overlay_bgr = None
+            current_overlay_alpha = None
+            current_y_min = 0
+            current_y_max = height
+            
+            try:
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                        
+                    active_text = ""
+                    if frame_idx < len(active_texts):
+                        active_text = active_texts[frame_idx]
+                        
+                    if active_text:
+                        if active_text != current_overlay_text:
+                            current_overlay_text = active_text
+                            current_overlay_bgr, current_overlay_alpha, current_y_min, current_y_max = create_subtitle_overlay(
+                                width, height,
+                                active_text,
+                                font_size=font_size,
+                                font_family=font_family,
+                                position=vertical_align,
+                                bg_opacity=bg_opacity,
+                                outline_width=outline_width,
+                                outline_color=outline_color,
+                                text_color=text_color,
+                                max_line_len=max_line_length,
+                                bg_full_width=bg_full_width,
+                                bg_height=bg_height,
+                                bottom_margin=bottom_margin,
+                                bg_color=bg_color
+                            )
+                        # Sliced NumPy blending for maximum speed
+                        frame_slice = frame[current_y_min:current_y_max, :]
+                        overlay_slice = current_overlay_bgr[current_y_min:current_y_max, :]
+                        alpha_slice = current_overlay_alpha[current_y_min:current_y_max, :]
+                        
+                        frame[current_y_min:current_y_max, :] = (
+                            frame_slice * (1.0 - alpha_slice) + overlay_slice * alpha_slice
+                        ).astype(np.uint8)
+                    else:
+                        current_overlay_text = None
+                        current_overlay_bgr = None
+                        current_overlay_alpha = None
+                        
+                    # Write raw frame bytes to FFmpeg stdin
+                    process.stdin.write(frame.tobytes())
+                    frame_idx += 1
+                    
+                    if total_frames > 0 and frame_idx % 30 == 0:
+                        percent = int(85 + (frame_idx / total_frames) * 10)
+                        log(f"PROGRESS: {percent}")
+            except Exception as e:
+                log(f"Error during subtitle burning / writing: {e}")
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                log_file.close()
+                cap.release()
+                return 1
+                
+            cap.release()
+            
+            # Close stdin and wait for FFmpeg to finish encoding
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+                
+            exit_code = process.wait()
+            log_file.close()
+            
+            if exit_code != 0:
+                log(f"FATAL: FFmpeg encoding failed with exit code {exit_code}")
+                try:
+                    if os.path.exists(ffmpeg_log_path):
+                        with open(ffmpeg_log_path, 'r', encoding='utf-8', errors='ignore') as lf:
+                            lines = lf.readlines()
+                            log("--- FFmpeg Subprocess Errors ---")
+                            for line in lines[-20:]:
+                                log(line.strip())
+                except Exception:
+                    pass
+                return 1
+            else:
+                try:
+                    if os.path.exists(ffmpeg_log_path):
+                        os.remove(ffmpeg_log_path)
+                except Exception:
+                    pass
+
     finally:
         if os.path.exists(concat_video_path):
             os.remove(concat_video_path)
         if os.path.exists(mixed_audio_path):
-            os.remove(mixed_audio_path)
+            try:
+                os.remove(mixed_audio_path)
+            except Exception:
+                pass
         for temp_f in downloaded_temps:
             if os.path.exists(temp_f):
-                os.remove(temp_f)
+                try:
+                    os.remove(temp_f)
+                except Exception:
+                    pass
         for clip in temp_video_clips:
             if clip and os.path.exists(clip):
                 try:

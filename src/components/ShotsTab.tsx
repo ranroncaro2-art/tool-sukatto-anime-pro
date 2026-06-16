@@ -27,6 +27,7 @@ const getMatchedCharacters = (shot: Shot, characters: Character[]) => {
   const detectedNames = detectCharacters(shot.prompt, characters);
   
   const matched = characters.filter(char => {
+    if (shot.excludedCharacters?.includes(char.name)) return false;
     if (!char.imageUrl) return false;
     if (detectedNames.includes(char.name)) return true;
     
@@ -70,6 +71,7 @@ const getMatchedBackgrounds = (shot: Shot, backgrounds: Background[]) => {
   const promptLower = (shot.prompt || "").toLowerCase();
   
   return backgrounds.filter(bg => {
+    if (shot.excludedBackgrounds?.includes(bg.location)) return false;
     if (!bg.imageUrl) return false;
     const loc = bg.location.toLowerCase();
     
@@ -197,6 +199,36 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
   // Pagination State & Helpers
   const [currentPage, setCurrentPage] = React.useState(1);
   const pageSize = 50;
+
+  const handleDeleteAutoCharacter = (shotIndex: number, charName: string) => {
+    setProject(prev => {
+      if (!prev) return prev;
+      const newShots = [...prev.shots];
+      const shot = { ...newShots[shotIndex] };
+      const excluded = [...(shot.excludedCharacters || [])];
+      if (!excluded.includes(charName)) {
+        excluded.push(charName);
+      }
+      shot.excludedCharacters = excluded;
+      newShots[shotIndex] = shot;
+      return { ...prev, shots: newShots };
+    });
+  };
+
+  const handleDeleteAutoBackground = (shotIndex: number, bgLocation: string) => {
+    setProject(prev => {
+      if (!prev) return prev;
+      const newShots = [...prev.shots];
+      const shot = { ...newShots[shotIndex] };
+      const excluded = [...(shot.excludedBackgrounds || [])];
+      if (!excluded.includes(bgLocation)) {
+        excluded.push(bgLocation);
+      }
+      shot.excludedBackgrounds = excluded;
+      newShots[shotIndex] = shot;
+      return { ...prev, shots: newShots };
+    });
+  };
 
   useEffect(() => {
     setCurrentPage(1);
@@ -1147,17 +1179,42 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                         <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest font-bold shrink-0">
                           Ảnh tham chiếu:
                         </span>
+                        {(shot.excludedCharacters?.length || shot.excludedBackgrounds?.length) ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setProject(prev => {
+                                if (!prev) return prev;
+                                const newShots = [...prev.shots];
+                                newShots[idx] = {
+                                  ...newShots[idx],
+                                  excludedCharacters: [],
+                                  excludedBackgrounds: []
+                                };
+                                return { ...prev, shots: newShots };
+                              });
+                            }}
+                            className="text-[8px] font-mono text-amber-500 hover:text-amber-400 hover:underline shrink-0 font-bold ml-1 cursor-pointer bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20"
+                            title="Khôi phục các ảnh tham chiếu tự động đã bị xóa"
+                          >
+                            Khôi phục ảnh tự động
+                          </button>
+                        ) : null}
                         <div className="flex items-center gap-2">
                           {customRefs.length > 0 ? (
                             customRefs.map((ref, refIdx) => (
                               <div 
                                 key={`custom-ref-${refIdx}`}
-                                className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-indigo-500/5 border border-indigo-500/10 hover:border-indigo-500/30 rounded-lg transition-all duration-300 shrink-0"
+                                className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-indigo-500/5 border border-indigo-500/10 hover:border-indigo-500/30 rounded-lg transition-all duration-300 shrink-0 cursor-pointer"
+                                onClick={() => {
+                                  setZoomedImageUrl(ref.url);
+                                  setZoomedImageName(`ref_image_${idx + 1}_${refIdx + 1}.jpg`);
+                                }}
                               >
                                 <img 
                                   src={ref.url} 
                                   alt={`Tham chiếu #${refIdx + 1}`}
-                                  className="w-8 h-8 rounded-md object-cover border border-white/10"
+                                  className="w-8 h-8 rounded-md object-cover border border-white/10 hover:opacity-85 transition-opacity"
                                   referrerPolicy="no-referrer"
                                 />
                                 <div className="flex flex-col">
@@ -1166,10 +1223,18 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                 </div>
 
                                 {/* Hover overlay with action buttons */}
-                                <div className="absolute inset-0 bg-black/90 backdrop-blur-xs rounded-lg flex items-center justify-center gap-1 opacity-0 group-hover/ref:opacity-100 transition-opacity duration-200">
+                                <div 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setZoomedImageUrl(ref.url);
+                                    setZoomedImageName(`ref_image_${idx + 1}_${refIdx + 1}.jpg`);
+                                  }}
+                                  className="absolute inset-0 bg-black/80 backdrop-blur-xs rounded-lg flex items-center justify-center gap-1 opacity-0 group-hover/ref:opacity-100 transition-opacity duration-200 cursor-pointer"
+                                >
                                   <button
                                     type="button"
-                                    onClick={() => {
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       setZoomedImageUrl(ref.url);
                                       setZoomedImageName(`ref_image_${idx + 1}_${refIdx + 1}.jpg`);
                                     }}
@@ -1180,7 +1245,10 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => setImageSelectorTarget({ type: 'shot', index: idx, refIndex: refIdx })}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setImageSelectorTarget({ type: 'shot', index: idx, refIndex: refIdx });
+                                    }}
                                     className="p-1 bg-white/10 hover:bg-indigo-600 text-white rounded transition-all cursor-pointer"
                                     title="Thay thế từ thư viện"
                                   >
@@ -1188,7 +1256,8 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => {
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       setFileUploadTarget({ type: 'shot', index: idx, refIndex: refIdx });
                                       setTimeout(() => refFileInputRef.current?.click(), 50);
                                     }}
@@ -1199,7 +1268,10 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => handleDeleteReferenceImage('shot', idx, refIdx)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteReferenceImage('shot', idx, refIdx);
+                                    }}
                                     className="p-1 bg-white/10 hover:bg-rose-600 text-white rounded transition-all cursor-pointer"
                                     title="Xóa"
                                   >
@@ -1220,36 +1292,112 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                           {matchedChars.map((char, cIdx) => (
                             <div 
                               key={`ref-char-${cIdx}`}
-                              className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-indigo-500/5 hover:bg-indigo-500/10 border border-indigo-500/10 hover:border-indigo-500/30 rounded-lg transition-all duration-300 shrink-0 select-none"
+                              className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-indigo-500/5 hover:bg-indigo-500/10 border border-indigo-500/10 hover:border-indigo-500/30 rounded-lg transition-all duration-300 shrink-0 cursor-pointer"
                               title={`Tự động: ${char.name}`}
+                              onClick={() => {
+                                setZoomedImageUrl(char.imageUrl!);
+                                setZoomedImageName(`char_${char.name}.jpg`);
+                              }}
                             >
                               <img 
                                 src={char.imageUrl} 
                                 alt={char.name}
-                                className="w-6 h-6 rounded-md object-cover border border-white/10"
+                                className="w-6 h-6 rounded-md object-cover border border-white/10 hover:opacity-85 transition-opacity"
                                 referrerPolicy="no-referrer"
                               />
                               <div className="flex flex-col">
                                 <span className="text-[9px] font-bold text-white leading-none">{char.name}</span>
                                 <span className="text-[7px] text-indigo-400 font-mono tracking-tighter leading-none mt-0.5">Tự động NV</span>
                               </div>
+
+                              {/* Hover overlay with action buttons */}
+                              <div 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setZoomedImageUrl(char.imageUrl!);
+                                  setZoomedImageName(`char_${char.name}.jpg`);
+                                }}
+                                className="absolute inset-0 bg-black/80 backdrop-blur-xs rounded-lg flex items-center justify-center gap-1.5 opacity-0 group-hover/ref:opacity-100 transition-opacity duration-200 cursor-pointer"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setZoomedImageUrl(char.imageUrl!);
+                                    setZoomedImageName(`char_${char.name}.jpg`);
+                                  }}
+                                  className="p-1 bg-white/10 hover:bg-indigo-600 text-white rounded transition-all cursor-pointer"
+                                  title="Phóng to"
+                                >
+                                  <ZoomIn className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteAutoCharacter(idx, char.name);
+                                  }}
+                                  className="p-1 bg-white/10 hover:bg-rose-600 text-white rounded transition-all cursor-pointer"
+                                  title="Xóa"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
                           ))}
                           {matchedBgs.map((bg, bIdx) => (
                             <div 
                               key={`ref-bg-${bIdx}`}
-                              className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-violet-500/5 hover:bg-violet-500/10 border border-violet-500/10 hover:border-violet-500/30 rounded-lg transition-all duration-300 shrink-0 select-none"
+                              className="group/ref relative flex items-center gap-1.5 px-2 py-1 bg-violet-500/5 hover:bg-violet-500/10 border border-violet-500/10 hover:border-violet-500/30 rounded-lg transition-all duration-300 shrink-0 cursor-pointer"
                               title={`Tự động: ${bg.location}`}
+                              onClick={() => {
+                                setZoomedImageUrl(bg.imageUrl!);
+                                setZoomedImageName(`bg_${bg.location}.jpg`);
+                              }}
                             >
                               <img 
                                 src={bg.imageUrl} 
                                 alt={bg.location}
-                                className="w-6 h-6 rounded-md object-cover border border-white/10"
+                                className="w-6 h-6 rounded-md object-cover border border-white/10 hover:opacity-85 transition-opacity"
                                 referrerPolicy="no-referrer"
                               />
                               <div className="flex flex-col">
                                 <span className="text-[9px] font-bold text-white leading-none truncate max-w-[80px]">{bg.location}</span>
                                 <span className="text-[7px] text-violet-400 font-mono tracking-tighter leading-none mt-0.5">Tự động BC</span>
+                              </div>
+
+                              {/* Hover overlay with action buttons */}
+                              <div 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setZoomedImageUrl(bg.imageUrl!);
+                                  setZoomedImageName(`bg_${bg.location}.jpg`);
+                                }}
+                                className="absolute inset-0 bg-black/80 backdrop-blur-xs rounded-lg flex items-center justify-center gap-1.5 opacity-0 group-hover/ref:opacity-100 transition-opacity duration-200 cursor-pointer"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setZoomedImageUrl(bg.imageUrl!);
+                                    setZoomedImageName(`bg_${bg.location}.jpg`);
+                                  }}
+                                  className="p-1 bg-white/10 hover:bg-indigo-600 text-white rounded transition-all cursor-pointer"
+                                  title="Phóng to"
+                                >
+                                  <ZoomIn className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteAutoBackground(idx, bg.location);
+                                  }}
+                                  className="p-1 bg-white/10 hover:bg-rose-600 text-white rounded transition-all cursor-pointer"
+                                  title="Xóa"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
                               </div>
                             </div>
                           ))}

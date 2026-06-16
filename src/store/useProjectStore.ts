@@ -292,11 +292,94 @@ Return ONLY the tags string, nothing else.`;
     }
   };
 
+  const runAiDirector = async (
+    srtText: string,
+    apiKey: string,
+    model: string
+  ): Promise<string[]> => {
+    store.setState({ isGenerating: true });
+    try {
+      let resultText = "";
+      let fetchedOk = false;
+
+      // Try local Next.js API first
+      try {
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "ai_director",
+            srtText,
+            apiKey,
+            model
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          resultText = JSON.stringify(data);
+          fetchedOk = true;
+        }
+      } catch (localErr) {
+        console.warn("Local API AI Director failed, using client-side direct API fallback:", localErr);
+      }
+
+      if (!fetchedOk) {
+        // Fallback: direct AI call from client-side
+        const prompt = `Bạn là một đạo diễn phim chuyên nghiệp. Nhiệm vụ của bạn là đọc file phụ đề SRT và phân loại các câu phụ đề thành hai loại:
+1. Câu thoại của nhân vật hoặc suy nghĩ nội tâm của nhân vật (thường nằm trong ngoặc đơn như (ふu...) hoặc đi kèm tên nhân vật nói). Những câu này CẦN GIỮ LẠI phụ đề và thuyết minh giọng đọc.
+2. Câu dẫn chuyện (narrator/narration) mô tả hành động nhân vật, mô tả bối cảnh, mô tả chuyển động của tự nhiên, không phải là lời nói trực tiếp hay suy nghĩ nội tâm của nhân vật. Những câu này CẦN ẨN phụ đề và không cần xuất thuyết minh giọng đọc (bỏ qua tiếng đọc).
+
+Hãy liệt kê các số thứ tự (index) của các câu phụ đề thuộc loại 2 (câu dẫn chuyện) để chúng không xuất hiện trên video xuất ra và tắt giọng thuyết minh của chúng.
+
+Ví dụ:
+SRT:
+1
+00:00:00,000 --> 00:00:03,040
+（ふう、今日もノルマ達成だな）
+2
+00:00:03,320 --> 00:00:08,760
+高級外車ポルシェのマカンを走らせながら,豊島はハンドルを軽く叩いた。
+3
+00:00:09,050 --> 00:00:15,130
+フロントガラス của 向こうには、彼が通う高級会員制スポーツジムのネオンが見えている。
+4
+00:00:15,390 --> 00:00:22,270
+（相変わらずジムの駐車場は満車か。併用コインパーキングも１時間千円。高えんだよな……）
+
+Đầu ra JSON đề xuất:
+{
+  "hiddenSrtIndexes": ["2", "3"]
+}
+
+Hãy phân tích toàn bộ phụ đề SRT sau đây và trả về đối tượng JSON chính xác có cấu trúc:
+{
+  "hiddenSrtIndexes": [...]
+}
+Không thêm bất kỳ giải thích nào khác ngoài JSON hợp lệ.
+
+SRT cần phân tích:
+${srtText}`;
+        resultText = await callAiDirectClientSide(prompt, apiKey, model, true);
+      }
+
+      const parsed = JSON.parse(resultText);
+      const hiddenSrtIndexes = parsed.hiddenSrtIndexes || [];
+      return hiddenSrtIndexes;
+    } catch (error) {
+      console.error("Failed to run AI Director:", error);
+      throw error;
+    } finally {
+      store.setState({ isGenerating: false });
+    }
+  };
+
   return {
     ...state,
     setBgmSuggestions,
     generateBgmSuggestions,
     scanLocalBgmFiles,
     regenerateBgmPrompt,
+    runAiDirector,
   };
 };
