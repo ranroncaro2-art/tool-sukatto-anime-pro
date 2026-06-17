@@ -95,6 +95,7 @@ interface ShotsTabProps {
   setZoomedPrompt: React.Dispatch<React.SetStateAction<string>>;
   isRefMappingApproved: boolean;
   isWritingShots: boolean;
+  isAnalyzing: boolean;
   selectedShots: Record<number, boolean>;
   setSelectedShots: React.Dispatch<React.SetStateAction<Record<number, boolean>>>;
   selectedShotsCount: number;
@@ -119,6 +120,7 @@ interface ShotsTabProps {
   togglePropInSituation: (id: number, propName: string, currentNames: string) => void;
   handleAddOfficialBackground: (loc: string) => void;
   generateCinematicShots: () => void;
+  generatePromptsAndVideosAuto: () => void;
   handleLockAndReconfigure: () => void;
   handleSelectAllShots: (checked: boolean) => void;
   handleRenderAllSelectedShots: () => void;
@@ -137,6 +139,14 @@ interface ShotsTabProps {
   setZoomedImageName: (name: string) => void;
   updateShot: (index: number, value: string) => void;
   handleDeleteReferenceImage: (type: string, index: number, refIdx: number) => void;
+  promptProgress: {
+    isAnalyzing?: boolean;
+    isWritingShots: boolean;
+    percent: number;
+    currentShot: number;
+    totalShots: number;
+    step: string;
+  } | null;
 }
 
 export const ShotsTab: React.FC<ShotsTabProps> = ({
@@ -153,6 +163,7 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
   setZoomedPrompt,
   isRefMappingApproved,
   isWritingShots,
+  isAnalyzing,
   selectedShots,
   setSelectedShots,
   selectedShotsCount,
@@ -176,6 +187,7 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
   togglePropInSituation,
   handleAddOfficialBackground,
   generateCinematicShots,
+  generatePromptsAndVideosAuto,
   handleLockAndReconfigure,
   handleSelectAllShots,
   handleRenderAllSelectedShots,
@@ -193,7 +205,8 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
   handleDeleteReferenceImage,
   updateShot,
   setZoomedImageUrl,
-  setZoomedImageName
+  setZoomedImageName,
+  promptProgress
 }) => {
 
   // Pagination State & Helpers
@@ -404,8 +417,9 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
             </div>
             <div className="flex gap-4">
               <button
+                disabled={isAnalyzing || isGenerating}
                 onClick={handleAddSituation}
-                className="px-5 py-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/30 hover:bg-white/10 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 cursor-pointer"
+                className="px-5 py-2.5 bg-white/5 border border-white/10 hover:border-indigo-500/30 hover:bg-white/10 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Plus className="w-3.5 h-3.5 text-indigo-400" /> Thêm Tình Huống
               </button>
@@ -439,7 +453,27 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {(!project.situations || project.situations.length === 0) ? (
+                {isAnalyzing ? (
+                  <tr>
+                    <td colSpan={8} className="py-16 text-center">
+                      <div className="flex flex-col items-center justify-center gap-4 max-w-md mx-auto p-6 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl">
+                        <div className="flex items-center gap-3">
+                          <RotateCcw className="w-5 h-5 text-indigo-400 animate-spin" />
+                          <span className="font-bold font-mono text-[10px] text-indigo-400 uppercase tracking-widest animate-pulse">
+                            {promptProgress?.step || "Đang phân tích kịch bản..."}
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 transition-all duration-300"
+                            style={{ width: `${promptProgress?.percent || 0}%` }}
+                          />
+                        </div>
+                        <span className="font-mono text-[10px] text-zinc-500">{promptProgress?.percent || 0}% HOÀN THÀNH</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (!project.situations || project.situations.length === 0) ? (
                   <tr>
                     <td colSpan={8} className="py-12 text-center text-zinc-500 uppercase tracking-wider font-mono text-[10px]">
                       Chưa có tình huống truyện nào được trích xuất. Vui lòng bấm nút "Phân Tích & Trích Xuất" từ Sidebar.
@@ -453,37 +487,41 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                         <input
                           type="text"
                           value={sit.timeRange}
+                          disabled={isAnalyzing || isGenerating}
                           onChange={(e) => handleUpdateSituation(sit.id, "timeRange", e.target.value)}
                           placeholder="E.g., 00:00 - 04:00"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                       </td>
                       <td className="py-4 px-4">
                         <input
                           type="text"
                           value={sit.location}
+                          disabled={isAnalyzing || isGenerating}
                           onChange={(e) => handleUpdateSituation(sit.id, "location", e.target.value)}
                           placeholder="E.g., Trong nhà bếp"
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                       </td>
                       <td className="py-4 px-4">
                         <textarea
                           value={sit.summary}
+                          disabled={isAnalyzing || isGenerating}
                           onChange={(e) => handleUpdateSituation(sit.id, "summary", e.target.value)}
                           placeholder="Tóm tắt sự việc..."
                           rows={2}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all resize-y min-h-[50px]"
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all resize-y min-h-[50px] disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                       </td>
                       <td className="py-4 px-4">
                         <div className="space-y-2">
                           <textarea
                             value={sit.characterNames}
+                            disabled={isAnalyzing || isGenerating}
                             onChange={(e) => handleUpdateSituation(sit.id, "characterNames", e.target.value)}
                             placeholder="E.g., Aoi_Home, Sensei_Classroom"
                             rows={2}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono resize-y min-h-[50px]"
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono resize-y min-h-[50px] disabled:opacity-50 disabled:cursor-not-allowed"
                           />
                           
                           {/* Warning System for Characters */}
@@ -531,9 +569,10 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   <button
                                     key={cIdx}
                                     type="button"
+                                    disabled={isAnalyzing || isGenerating}
                                     onClick={() => toggleCharacterInSituation(sit.id, char.name, sit.characterNames)}
                                     className={cn(
-                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border",
+                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border disabled:opacity-50 disabled:cursor-not-allowed",
                                       isActive
                                         ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.15)]"
                                         : "bg-white/[0.02] border-white/10 text-zinc-400 hover:text-zinc-300 hover:bg-white/[0.05]"
@@ -618,9 +657,10 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   <button
                                     key={bIdx}
                                     type="button"
+                                    disabled={isAnalyzing || isGenerating}
                                     onClick={() => toggleBackgroundInSituation(sit.id, bg.location, sit.backgroundNames)}
                                     className={cn(
-                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border",
+                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border disabled:opacity-50 disabled:cursor-not-allowed",
                                       isActive
                                         ? "bg-teal-500/10 border-teal-500/40 text-teal-300 shadow-[0_0_10px_rgba(20,184,166,0.15)]"
                                         : "bg-white/[0.02] border-white/10 text-zinc-400 hover:text-zinc-300 hover:bg-white/[0.05]"
@@ -651,10 +691,11 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                         <div className="space-y-2">
                           <textarea
                             value={sit.propNames || ""}
+                            disabled={isAnalyzing || isGenerating}
                             onChange={(e) => handleUpdateSituation(sit.id, "propNames", e.target.value)}
                             placeholder="E.g., Diary, Letter"
                             rows={2}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono resize-y min-h-[50px]"
+                            className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 transition-all font-mono resize-y min-h-[50px] disabled:opacity-50 disabled:cursor-not-allowed"
                           />
 
                           {/* Warning System for Props */}
@@ -693,9 +734,10 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                                   <button
                                     key={pIdx}
                                     type="button"
+                                    disabled={isAnalyzing || isGenerating}
                                     onClick={() => togglePropInSituation(sit.id, prop.name, sit.propNames || "")}
                                     className={cn(
-                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border",
+                                      "flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-mono transition-all hover:scale-105 active:scale-95 cursor-pointer border disabled:opacity-50 disabled:cursor-not-allowed",
                                       isActive
                                         ? "bg-indigo-500/10 border-indigo-500/40 text-indigo-300 shadow-[0_0_10px_rgba(99,102,241,0.15)]"
                                         : "bg-white/[0.02] border-white/10 text-zinc-400 hover:text-zinc-300 hover:bg-white/[0.05]"
@@ -725,8 +767,9 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                       <td className="py-4 px-6 text-center">
                         <button
                           type="button"
+                          disabled={isAnalyzing || isGenerating}
                           onClick={() => handleDeleteSituation(sit.id)}
-                          className="text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 p-2.5 rounded-xl border border-red-500/20 hover:border-red-500/40 transition-all cursor-pointer"
+                          className="text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 p-2.5 rounded-xl border border-red-500/20 hover:border-red-500/40 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -739,33 +782,85 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
           </div>
 
           {/* Action button */}
-          {project.situations && project.situations.length > 0 && (
-            <div className="pt-4 flex flex-col items-center">
-              <button
-                disabled={isGenerating || isWritingShots}
-                onClick={generateCinematicShots}
-                className={cn(
-                  "w-full max-w-xl h-14 rounded-2xl font-bold uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-3 transition-all relative overflow-hidden group shadow-2xl cursor-pointer",
-                  "bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:scale-[1.02] active:scale-[0.98] hover:shadow-[0_0_30px_rgba(16,185,129,0.3)] disabled:opacity-50 disabled:cursor-not-allowed border border-emerald-500/20"
-                )}
-              >
+          {project.situations && project.situations.length > 0 && (() => {
+            const isReferenceImagesComplete = () => {
+              if (!project) return false;
+              const charsComplete = project.characters.length > 0 && project.characters.every(c => c.imageUrl && c.imageUrl.trim() !== "");
+              const bgComplete = project.backgrounds.length > 0 && project.backgrounds.every(b => b.imageUrl && b.imageUrl.trim() !== "");
+              const propsComplete = !project.props || project.props.length === 0 || project.props.every(p => !p.name || (p.imageUrl && p.imageUrl.trim() !== ""));
+              return charsComplete && bgComplete && propsComplete;
+            };
+            const isComplete = isReferenceImagesComplete();
+
+            return (
+              <div className="pt-4 flex flex-col items-center gap-4 w-full">
                 {isWritingShots ? (
-                  <>
-                    <RotateCcw className="w-4 h-4 animate-spin text-white" />
-                    <span>Đang Viết Prompts Phân Cảnh (Giai Đoạn 2)...</span>
-                  </>
+                  <div className="w-full max-w-xl p-5 bg-indigo-500/5 border border-indigo-500/10 rounded-2xl flex flex-col gap-3">
+                    <div className="flex justify-between items-center text-[10px] font-mono uppercase tracking-widest text-indigo-400 font-bold">
+                      <span className="animate-pulse">{promptProgress?.step || "Đang tạo prompts..."}</span>
+                      <span>{promptProgress?.percent || 0}%</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-indigo-500 via-violet-500 to-indigo-500 transition-all duration-300"
+                        style={{ width: `${promptProgress?.percent || 0}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center text-[9px] font-mono text-zinc-500">
+                      <span>TIẾN TRÌNH TỰ ĐỘNG</span>
+                      <span>Đã xử lý: {promptProgress?.currentShot || 0} / {promptProgress?.totalShots || 0} phân cảnh</span>
+                    </div>
+                  </div>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4 text-emerald-300 animate-pulse" />
-                    <span>2. Xác Nhận & Sinh Prompt Chi Tiết</span>
+                    <div className="flex flex-col md:flex-row gap-4 w-full max-w-2xl justify-center">
+                      {/* Traditional Step 2 Button */}
+                      <button
+                        disabled={isGenerating || isWritingShots}
+                        onClick={generateCinematicShots}
+                        className={cn(
+                          "flex-1 h-14 rounded-2xl font-bold uppercase tracking-[0.15em] text-[10px] flex items-center justify-center gap-2 transition-all relative overflow-hidden group shadow-2xl cursor-pointer border border-emerald-500/20",
+                          "bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:scale-[1.02] active:scale-[0.98] hover:shadow-[0_0_20px_rgba(16,185,129,0.2)] disabled:opacity-50 disabled:cursor-not-allowed"
+                        )}
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-300 animate-pulse" />
+                        <span>2. Xác Nhận & Sinh Prompt Chi Tiết</span>
+                      </button>
+
+                      {/* Auto Prompts + Video Button */}
+                      <button
+                        disabled={isGenerating || isWritingShots || !isComplete}
+                        onClick={generatePromptsAndVideosAuto}
+                        className={cn(
+                          "flex-1 h-14 rounded-2xl font-bold uppercase tracking-[0.15em] text-[10px] flex items-center justify-center gap-2 transition-all relative overflow-hidden group shadow-2xl cursor-pointer border",
+                          isComplete
+                            ? "bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:scale-[1.02] active:scale-[0.98] hover:shadow-[0_0_20px_rgba(99,102,241,0.3)] border-indigo-500/20"
+                            : "bg-zinc-800 border-white/5 text-zinc-500 cursor-not-allowed opacity-50"
+                        )}
+                        title={!isComplete ? "Cần chuẩn bị đầy đủ ảnh tham chiếu nhân vật, bối cảnh và đạo cụ để kích hoạt chế độ tự động" : "Tự động sinh Prompt phân cảnh và đưa toàn bộ video vào hàng chờ"}
+                      >
+                        <PlayCircle className="w-3.5 h-3.5" />
+                        <span>Tự động Tạo Prompts & Tạo Video</span>
+                      </button>
+                    </div>
+
+                    {!isComplete && (
+                      <div className="flex items-center gap-2 text-[10px] text-amber-400 bg-amber-500/5 border border-amber-500/10 px-3.5 py-2 rounded-xl max-w-xl text-center">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0 text-amber-400" />
+                        <span>
+                          Chế độ tự động yêu cầu **tất cả nhân vật, bối cảnh và đạo cụ** phải có ảnh tham chiếu đầy đủ. Vui lòng bổ sung các ảnh thiếu trước khi sử dụng.
+                        </span>
+                      </div>
+                    )}
+
+                    <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest text-center">
+                      AI SẼ DỰA TRÊN THÔNG TIN KIỂM DUYỆT ĐỂ BẮT ĐẦU PHÂN TÍCH PROMPT CHI TIẾT CHO TỪNG PHÂN CẢNH
+                    </p>
                   </>
                 )}
-              </button>
-              <p className="mt-3 text-[10px] font-mono text-zinc-500 uppercase tracking-widest text-center">
-                AI SẼ DỰA TRÊN THÔNG TIN KIỂM DUYỆT ĐỂ BẮT ĐẦU PHÂN TÍCH PROMPT CHI TIẾT CHO TỪNG PHÂN CẢNH
-              </p>
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </div>
       ) : (
         <>

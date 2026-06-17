@@ -95,8 +95,9 @@ app.on('activate', function () {
 ipcMain.on('compile-video', (event, projectData, srtText, customOutputDir) => {
   const isDev = process.env.NODE_ENV === 'development';
   
-  // Tạo thư mục tạm thời để biên dịch nếu chưa có
-  const tempDir = path.join(app.getPath('userData'), 'sukatto-temp');
+  // Tạo thư mục tạm thời để biên dịch nếu chưa có (cách ly theo id dự án)
+  const projectId = projectData.id || 'default';
+  const tempDir = path.join(app.getPath('userData'), 'sukatto-temp', projectId);
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
   }
@@ -193,9 +194,35 @@ ipcMain.on('compile-video', (event, projectData, srtText, customOutputDir) => {
 // Xử lý sự kiện IPC để lấy dữ liệu kết xuất gần nhất
 ipcMain.handle('get-last-compile-data', async () => {
   try {
-    const tempDir = path.join(app.getPath('userData'), 'sukatto-temp');
-    const configPath = path.join(tempDir, 'config.json');
-    const srtPath = path.join(tempDir, 'subtitles.srt');
+    const mainTempDir = path.join(app.getPath('userData'), 'sukatto-temp');
+    let configPath = path.join(mainTempDir, 'config.json');
+    let srtPath = path.join(mainTempDir, 'subtitles.srt');
+    
+    // Nếu tệp cấu hình chính không tồn tại, thử tìm thư mục con mới nhất
+    if (!fs.existsSync(configPath) && fs.existsSync(mainTempDir)) {
+      const subs = fs.readdirSync(mainTempDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory())
+        .map(dirent => dirent.name);
+      
+      let newestTime = 0;
+      let newestSub = null;
+      
+      for (const sub of subs) {
+        const subConfig = path.join(mainTempDir, sub, 'config.json');
+        if (fs.existsSync(subConfig)) {
+          const stat = fs.statSync(subConfig);
+          if (stat.mtimeMs > newestTime) {
+            newestTime = stat.mtimeMs;
+            newestSub = sub;
+          }
+        }
+      }
+      
+      if (newestSub) {
+        configPath = path.join(mainTempDir, newestSub, 'config.json');
+        srtPath = path.join(mainTempDir, newestSub, 'subtitles.srt');
+      }
+    }
     
     let project = null;
     let srtText = "";

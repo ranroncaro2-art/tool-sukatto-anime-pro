@@ -10,7 +10,7 @@ import { useProjectStore } from "../store/useProjectStore";
 import { splitLongSubtitleBlock, containsCjk, formatSecondsToSrtTime, getSplitSubDuration } from "../utils/parsers";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-
+import { queueStore } from "../store/useQueueStore";
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -30,6 +30,12 @@ interface CinemaTabProps {
   apiBaseUrl?: string;
   setProject?: React.Dispatch<React.SetStateAction<ProjectData | null>>;
   projectPath?: string;
+  exportVideoType: "mixed" | "images_only" | "videos_only";
+  setExportVideoType: React.Dispatch<React.SetStateAction<"mixed" | "images_only" | "videos_only">>;
+  burnSubtitles: boolean;
+  setBurnSubtitles: React.Dispatch<React.SetStateAction<boolean>>;
+  subtitleStyle: any;
+  setSubtitleStyle: React.Dispatch<React.SetStateAction<any>>;
 }
 
 const parseTimeToSeconds = (timeStr: string): number => {
@@ -182,8 +188,109 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
   selectedModel = "gemini-2.5-flash",
   apiBaseUrl = "http://127.0.0.1:5000",
   setProject,
-  projectPath = ""
+  projectPath = "",
+  exportVideoType,
+  setExportVideoType,
+  burnSubtitles,
+  setBurnSubtitles,
+  subtitleStyle,
+  setSubtitleStyle
 }) => {
+  const safeSubtitleStyle = subtitleStyle || {
+    fontFamily: "sans-serif",
+    fontSize: 24,
+    textColor: "#ffffff",
+    outlineColor: "#000000",
+    outlineWidth: 2,
+    verticalAlign: "bottom",
+    bgOpacity: 0.4,
+    maxLineLength: 38,
+    maxWordsLimit: 7,
+    bgFullWidth: false,
+    bgHeight: 80,
+    bottomMargin: 24,
+    bgColor: "#000000"
+  };
+  const [showHooksModal, setShowHooksModal] = useState<boolean>(false);
+  const [tempSelectedHooks, setTempSelectedHooks] = useState<string[]>([]);
+  const [introVideoFile, setIntroVideoFile] = useState<string>("");
+  const [introDuration, setIntroDuration] = useState<number>(0);
+
+  const [isPlayingHooksPreview, setIsPlayingHooksPreview] = useState<boolean>(false);
+  const [currentHookPreviewIndex, setCurrentHookPreviewIndex] = useState<number>(0);
+  const hooksVideoRef = useRef<HTMLVideoElement>(null);
+
+  const hookShots = useMemo(() => {
+    return tempSelectedHooks.map(subIdx => findShotForSubIndex(subIdx)).filter(Boolean);
+  }, [tempSelectedHooks, project?.shots]);
+
+  useEffect(() => {
+    if (showHooksModal) {
+      setTempSelectedHooks(project?.hooks || []);
+      setCurrentHookPreviewIndex(0);
+      setIsPlayingHooksPreview(false);
+    }
+  }, [showHooksModal, project?.hooks]);
+
+  useEffect(() => {
+    let timer: any = null;
+    if (isPlayingHooksPreview && hookShots.length > 0) {
+      const activeShot = hookShots[currentHookPreviewIndex];
+      if (activeShot) {
+        if (activeShot.videoUrl) {
+          // Handled by onEnded of <video>
+        } else {
+          // It's an image, set a timeout
+          const timeParts = activeShot.time ? activeShot.time.split("-->").map(p => p.trim()) : [];
+          const start = timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
+          const end = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : start + 4;
+          const duration = Math.max(0.5, end - start);
+          
+          timer = setTimeout(() => {
+            if (currentHookPreviewIndex < hookShots.length - 1) {
+              setCurrentHookPreviewIndex(prev => prev + 1);
+            } else {
+              setIsPlayingHooksPreview(false);
+              setCurrentHookPreviewIndex(0);
+            }
+          }, duration * 1000);
+        }
+      }
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [isPlayingHooksPreview, currentHookPreviewIndex, hookShots]);
+
+  const handleHooksVideoEnded = () => {
+    if (currentHookPreviewIndex < hookShots.length - 1) {
+      setCurrentHookPreviewIndex(prev => prev + 1);
+    } else {
+      setIsPlayingHooksPreview(false);
+      setCurrentHookPreviewIndex(0);
+    }
+  };
+
+  const handleSaveHooks = () => {
+    if (setProject) {
+      setProject((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          hooks: tempSelectedHooks,
+          introSubIndex: tempSelectedHooks.length > 0 ? "hooks" : undefined
+        };
+      });
+    }
+    setShowHooksModal(false);
+    alert("Đã thiết lập Hook mở đầu và chèn Intro thành công!");
+  };
+
+  const activeHookSubText = useMemo(() => {
+    const activeShot = hookShots[currentHookPreviewIndex];
+    return activeShot ? getSubtitlesText(activeShot) : "";
+  }, [currentHookPreviewIndex, hookShots]);
+
   const [currentPlayIndex, setCurrentPlayIndex] = useState<number>(-1);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   
@@ -244,11 +351,23 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
 
   // Export UI states
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
-  const [exportVideoType, setExportVideoType] = useState<"mixed" | "images_only" | "videos_only">("mixed");
-  const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
+
   const [isExportFullscreen, setIsExportFullscreen] = useState<boolean>(false);
   const [hasIntroVideo, setHasIntroVideo] = useState<boolean>(false);
   const [hasOutroVideo, setHasOutroVideo] = useState<boolean>(false);
+
+  const getLocalMediaDuration = (path: string): Promise<number> => {
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      video.src = `safe-file:///${path.replace(/\\/g, '/')}`;
+      video.onloadedmetadata = () => {
+        resolve(video.duration);
+      };
+      video.onerror = () => {
+        resolve(0);
+      };
+    });
+  };
 
   const scanIntroOutro = async () => {
     const isElectron = !!(window as any).electronAPI;
@@ -260,12 +379,26 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
             const ext = name.split('.').pop()?.toLowerCase() || "";
             return ['mp4', 'avi', 'mov', 'webm'].includes(ext);
           });
-          setHasIntroVideo(videos.length > 0);
+          const hasIntro = videos.length > 0;
+          setHasIntroVideo(hasIntro);
+          if (hasIntro) {
+            setIntroVideoFile(videos[0]);
+            const path = `${projectPath}/intro/${videos[0]}`;
+            const dur = await getLocalMediaDuration(path);
+            setIntroDuration(dur);
+          } else {
+            setIntroVideoFile("");
+            setIntroDuration(0);
+          }
         } else {
           setHasIntroVideo(false);
+          setIntroVideoFile("");
+          setIntroDuration(0);
         }
       } catch (err) {
         setHasIntroVideo(false);
+        setIntroVideoFile("");
+        setIntroDuration(0);
       }
 
       try {
@@ -285,6 +418,10 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     }
   };
 
+  useEffect(() => {
+    scanIntroOutro();
+  }, [projectPath]);
+
   const [validationStatus, setValidationStatus] = useState<{
     checked: boolean;
     success: boolean;
@@ -294,49 +431,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     missingBgm?: string;
   }>({ checked: false, success: false, errorMsg: "" });
 
-  const [subtitleStyle, setSubtitleStyle] = useState(() => {
-    const saved = localStorage.getItem("ai_subtitle_style");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (parsed.maxWordsLimit === undefined) {
-          parsed.maxWordsLimit = 7;
-        }
-        if (parsed.bgFullWidth === undefined) {
-          parsed.bgFullWidth = false;
-        }
-        if (parsed.bgHeight === undefined) {
-          parsed.bgHeight = 80;
-        }
-        if (parsed.bottomMargin === undefined) {
-          parsed.bottomMargin = 24;
-        }
-        if (parsed.bgColor === undefined) {
-          parsed.bgColor = "#000000";
-        }
-        return parsed;
-      } catch (e) {}
-    }
-    return {
-      fontFamily: "sans-serif",
-      fontSize: 24,
-      textColor: "#ffffff",
-      outlineColor: "#000000",
-      outlineWidth: 2,
-      verticalAlign: "bottom",
-      bgOpacity: 0.4,
-      maxLineLength: 38,
-      maxWordsLimit: 7,
-      bgFullWidth: false,
-      bgHeight: 80,
-      bottomMargin: 24,
-      bgColor: "#000000"
-    };
-  });
 
-  useEffect(() => {
-    localStorage.setItem("ai_subtitle_style", JSON.stringify(subtitleStyle));
-  }, [subtitleStyle]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -540,28 +635,144 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     };
   }, [voiceBlobUrls, bgmBlobUrls]);
 
+  const findShotForSubIndex = (subIndex: string) => {
+    if (!project || !project.shots) return null;
+    const subIdxNum = parseInt(subIndex, 10);
+    const origId = subIdxNum >= 1000 ? Math.floor(subIdxNum / 1000) : subIdxNum;
+    return project.shots.find(shot => {
+      if (shot.range) {
+        const parts = shot.range.split("-");
+        const startIdx = parseInt(parts[0], 10);
+        const endIdx = parts.length > 1 ? parseInt(parts[1], 10) : startIdx;
+        return origId >= startIdx && origId <= endIdx;
+      }
+      return shot.id === origId;
+    }) || null;
+  };
+
+  const hooksDur = useMemo(() => {
+    if (!project || !project.hooks || project.hooks.length === 0) return 0;
+    return project.hooks.reduce((acc: number, subIdx: string) => {
+      const shot = findShotForSubIndex(subIdx);
+      if (shot) {
+        const timeParts = shot.time ? shot.time.split("-->").map(p => p.trim()) : [];
+        const start = timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
+        const end = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : start + 4;
+        return acc + Math.max(0.5, end - start);
+      }
+      return acc + 4;
+    }, 0);
+  }, [project, project?.hooks]);
+
+  const introDur = useMemo(() => {
+    return hasIntroVideo ? (project.introSubIndex === "hooks" ? introDuration : 0) : 0;
+  }, [hasIntroVideo, project?.introSubIndex, introDuration]);
+
+  const getOriginalStoryTime = (time: number): { originalTime: number; isIntro: boolean; isHook: boolean } => {
+    if (hooksDur === 0 && introDur === 0) {
+      return { originalTime: time, isIntro: false, isHook: false };
+    }
+    
+    if (time < hooksDur) {
+      let acc = 0;
+      for (let i = 0; i < (project?.hooks?.length || 0); i++) {
+        const subIdx = project.hooks![i];
+        const shot = findShotForSubIndex(subIdx);
+        const shotDur = shot ? (() => {
+          const timeParts = shot.time ? shot.time.split("-->").map(p => p.trim()) : [];
+          const start = timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
+          const end = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : start + 4;
+          return Math.max(0.5, end - start);
+        })() : 4;
+        
+        if (time >= acc && time <= acc + shotDur) {
+          const relativeTimeInHook = time - acc;
+          const origShotStart = shot ? (() => {
+            const timeParts = shot.time ? shot.time.split("-->").map(p => p.trim()) : [];
+            return timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
+          })() : 0;
+          return { originalTime: origShotStart + relativeTimeInHook, isIntro: false, isHook: true };
+        }
+        acc += shotDur;
+      }
+      return { originalTime: 0, isIntro: false, isHook: true };
+    } else if (time >= hooksDur && time < hooksDur + introDur) {
+      return { originalTime: -1, isIntro: true, isHook: false };
+    } else {
+      return { originalTime: time - hooksDur - introDur, isIntro: false, isHook: false };
+    }
+  };
+
   // Filter shots that have successfully generated video or have images
   const validShots = useMemo(() => {
     if (!project || !project.shots) return [];
-    return project.shots.map((shot, idx) => {
-      const timeParts = shot.time ? shot.time.split("-->").map(p => p.trim()) : [];
-      const startTime = timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
-      const endTime = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : startTime + 4;
-      const duration = Math.max(0.5, endTime - startTime);
-      
-      return {
+    
+    const list: any[] = [];
+    
+    // 1. Add hook shots
+    if (project.hooks && project.hooks.length > 0) {
+      project.hooks.forEach((subIdx: string, idx: number) => {
+        const shot = findShotForSubIndex(subIdx);
+        if (shot) {
+          list.push({
+            ...shot,
+            isHook: true,
+            playId: `hook_${idx}_${shot.id}`
+          });
+        }
+      });
+    }
+    
+    // 2. Add intro shot
+    if (hasIntroVideo && project.introSubIndex === "hooks" && introVideoFile) {
+      list.push({
+        id: -99,
+        scene: "[Video Intro]",
+        prompt: "",
+        character: "",
+        videoUrl: `safe-file:///${projectPath.replace(/\\/g, '/')}/intro/${introVideoFile}`,
+        duration: introDuration,
+        isIntro: true,
+        playId: "intro"
+      });
+    }
+    
+    // 3. Add main story shots
+    project.shots.forEach((shot, idx) => {
+      list.push({
         ...shot,
         originalIndex: idx,
-        startTime,
-        endTime,
+        playId: `story_${idx}_${shot.id}`
+      });
+    });
+    
+    // 4. Map start times, end times, and durations
+    let accumulated = 0;
+    return list.map((shot) => {
+      let duration = 4.0;
+      if (shot.isIntro) {
+        duration = introDuration || 4.0;
+      } else {
+        const timeParts = shot.time ? shot.time.split("-->").map((p: any) => p.trim()) : [];
+        const startTime = timeParts.length > 0 ? parseTimeToSeconds(timeParts[0]) : 0;
+        const endTime = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : startTime + 4;
+        duration = Math.max(0.5, endTime - startTime);
+      }
+      
+      const res = {
+        ...shot,
+        startTime: accumulated,
+        endTime: accumulated + duration,
         duration
       };
+      accumulated += duration;
+      return res;
     });
-  }, [project]);
+  }, [project, hasIntroVideo, project?.introSubIndex, introVideoFile, introDuration]);
 
   // Total duration of successful videos or images combined
   const totalDuration = useMemo(() => {
-    return validShots.reduce((acc, shot) => acc + ((shot.videoUrl || shot.imageUrl) ? shot.duration : 0), 0);
+    return validShots.reduce((acc, shot) => acc + ((shot.videoUrl || shot.imageUrl || shot.isIntro) ? shot.duration : 0), 0);
   }, [validShots]);
 
   const getTimelineMapping = (masterTime: number): { shotIndex: number; relativeTime: number } => {
@@ -660,12 +871,21 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
   }, [volume, isMuted, bgmSuggestions, currentPlayIndex, project.hiddenSrtIndexes, project.useAiDirector]);
 
   const syncAudioAndBgm = (calculatedMasterTime: number) => {
+    const { originalTime, isIntro, isHook } = getOriginalStoryTime(calculatedMasterTime);
+    if (isIntro) {
+      if (voiceAudioRef.current) voiceAudioRef.current.pause();
+      if (bgmAudioRef.current) bgmAudioRef.current.pause();
+      lastPlayedVoiceIdRef.current = null;
+      currentBgmFileRef.current = null;
+      return;
+    }
+
     // 1. Sync Voice Audio based on Subtitle block start time
     const activeBlock = srtData.find(block => {
       const timeParts = block.time.split("-->").map(p => p.trim());
       const startTime = parseTimeToSeconds(timeParts[0]);
       const endTime = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : startTime + 4;
-      return calculatedMasterTime >= startTime && calculatedMasterTime <= endTime;
+      return originalTime >= startTime && originalTime <= endTime;
     });
 
     const isBlockHidden = activeBlock ? (() => {
@@ -682,7 +902,10 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       let audio = voiceAudioRef.current;
       const blobUrl = voiceBlobUrls[String(origId)];
 
-      if (lastPlayedVoiceIdRef.current !== String(origId)) {
+      const activeShot = currentPlayIndex !== -1 ? validShots[currentPlayIndex] : null;
+      const uniquePlayKey = String(origId) + "_" + ((activeShot as any)?.playId || "");
+
+      if (lastPlayedVoiceIdRef.current !== uniquePlayKey) {
         // Stop any currently playing voice audio
         if (audio) {
           audio.pause();
@@ -697,7 +920,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
           newAudio.addEventListener("loadedmetadata", () => {
             const totalDur = newAudio.duration;
             if (!isNaN(totalDur) && totalDur > 0) {
-              const targetPos = getAudioPosition(activeBlock, calculatedMasterTime, totalDur, srtData);
+              const targetPos = getAudioPosition(activeBlock, originalTime, totalDur, srtData);
               newAudio.currentTime = targetPos;
             }
           });
@@ -705,11 +928,11 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
           if (isPlaying) {
             newAudio.play().catch(() => {});
           }
-          lastPlayedVoiceIdRef.current = String(origId);
+          lastPlayedVoiceIdRef.current = uniquePlayKey;
         }
       } else if (audio && !isNaN(audio.duration) && audio.duration > 0) {
         // Audio is already playing, check drift and sync
-        const targetPos = getAudioPosition(activeBlock, calculatedMasterTime, audio.duration, srtData);
+        const targetPos = getAudioPosition(activeBlock, originalTime, audio.duration, srtData);
         if (Math.abs(audio.currentTime - targetPos) > 0.3) {
           audio.currentTime = targetPos;
         }
@@ -732,10 +955,10 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     // 2. Sync BGM Suggestions based on Time range
     const activeBgm = bgmSuggestions.find(sugg => {
       const { start, end } = parseTimeRangeToSeconds(sugg.timeRange);
-      return calculatedMasterTime >= start && calculatedMasterTime <= end;
+      return originalTime >= start && originalTime <= end;
     });
 
-    if (activeBgm && activeBgm.audioFile) {
+    if (!isHook && activeBgm && activeBgm.audioFile) {
       const audioFile = activeBgm.audioFile;
       if (currentBgmFileRef.current !== audioFile) {
         if (bgmAudioRef.current) {
@@ -1031,12 +1254,15 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
   const activeSubtitle = useMemo(() => {
     if (srtData.length === 0) return "";
     
+    const { originalTime, isIntro, isHook } = getOriginalStoryTime(currentTime);
+    if (isIntro) return "";
+
     // Find the block in srtData that covers the current playback time
     const activeBlock = srtData.find(block => {
       const timeParts = block.time.split("-->").map(p => p.trim());
       const startTime = parseTimeToSeconds(timeParts[0]);
       const endTime = timeParts.length > 1 ? parseTimeToSeconds(timeParts[1]) : startTime + 4;
-      return currentTime >= startTime && currentTime <= endTime;
+      return originalTime >= startTime && originalTime <= endTime;
     });
 
     if (activeBlock) {
@@ -1057,7 +1283,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       return getSubtitlesText(shot);
     }
     return "";
-  }, [currentTime, currentPlayIndex, validShots, srtData, project.hiddenSrtIndexes, project.useAiDirector]);
+  }, [currentTime, currentPlayIndex, validShots, srtData, project.hiddenSrtIndexes, project.useAiDirector, hooksDur, introDur]);
 
   const retrieveAndSyncSrt = () => {
     const originalSrtText = localStorage.getItem("ai_srt_text_original");
@@ -1342,7 +1568,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
       localStorage.setItem("ai_srt_text_original", currentSrtText);
     }
 
-    const maxWords = subtitleStyle.maxWordsLimit || 7;
+    const maxWords = safeSubtitleStyle.maxWordsLimit || 7;
     const splitBlocks: SRTBlock[] = [];
     srtData.forEach(block => {
       const split = splitLongSubtitleBlock(block, maxWords);
@@ -1392,156 +1618,186 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
     ]);
 
     const isElectron = typeof window !== "undefined" && (window as any).electronAPI !== undefined;
+    const projectId = (project as any).id || "default";
+    const projectName = (project as any).name || "Dự án";
+    const compileId = "compile_" + projectId + "_" + Date.now();
 
-    if (isElectron) {
-      try {
-        const api = (window as any).electronAPI;
+    queueStore.enqueue({
+      id: compileId,
+      projectId,
+      projectName,
+      type: "compile",
+      label: `Xuất phim Full HD cho dự án: ${projectName}`,
+      run: () => {
+        return new Promise<void>((resolve, reject) => {
+          if (isElectron) {
+            try {
+              const api = (window as any).electronAPI;
 
-        // Set up compile log listener
-        api.onCompileLog((line: string) => {
-          setSystemLogs(prev => {
-            if (!line.trim()) return prev;
-            
-            // Bỏ qua dòng tiến độ để không spam giao diện log
-            if (/^PROGRESS:\s*\d+/i.test(line.trim())) {
-              return prev;
-            }
-            
-            const matchScene = line.match(/Processing Shot\s*(\d+)\/(\d+)/i);
-            if (matchScene) {
-              const currentScene = parseInt(matchScene[1], 10);
-              const totalScenes = parseInt(matchScene[2], 10);
-              if (totalScenes > 0) {
-                setRenderProgress(Math.round((currentScene / totalScenes) * 60));
-              }
-            }
-            return [...prev, line];
-          });
-        });
-
-        // Set up progress listener
-        api.onCompileProgress((percent: number) => {
-          setRenderProgress(percent);
-        });
-
-        // Set up finish listener
-        api.onCompileFinished((code: number, finalOutputDir: string) => {
-          setIsRendering(false);
-          if (code === 0) {
-            setRenderStatus("Xuất phim thành công!");
-            setSystemLogs(prev => [...prev, `[System] Thành công! File lưu tại: ${finalOutputDir}\\final_compiled_video.mp4`]);
-            alert(`Dựng phim thành công! Video đã lưu tại: ${finalOutputDir}\\final_compiled_video.mp4`);
-          } else {
-            setRenderStatus("Dựng phim thất bại");
-            alert(`Dựng phim thất bại với mã lỗi: ${code}`);
-          }
-        });
-
-        // Trigger compilation
-        const projectCopy: any = { ...project };
-        if (subtitleStyle) {
-          projectCopy.style = {
-            ...subtitleStyle,
-            burnSubtitles
-          };
-        }
-        projectCopy.exportMode = exportVideoType;
-
-        api.compileVideo(projectCopy, reconstructedSrt, outputDir);
-      } catch (err: any) {
-        setIsRendering(false);
-        setRenderStatus("Lỗi kết xuất");
-        alert(`Không thể bắt đầu tiến trình xuất video: ${err.message}`);
-      }
-    } else {
-      try {
-        const res = await fetch("/api/export", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            project,
-            srtText: reconstructedSrt,
-            projectPath: outputDir,
-            exportMode: exportVideoType,
-            style: {
-              ...subtitleStyle,
-              burnSubtitles
-            }
-          })
-        });
-
-        if (!res.ok) {
-          const errData = await res.json();
-          throw new Error(errData.error || `HTTP error ${res.status}`);
-        }
-
-        // Poll logs from `/api/logs` in real-time
-        const pollInterval = setInterval(async () => {
-          try {
-            const logRes = await fetch("/api/logs");
-            if (!logRes.ok) return;
-            const logData = await logRes.json();
-            if (logData.success && logData.logs) {
-              let lastProgress = 0;
-              let finished = false;
-              let success = false;
-              
-              for (let i = logData.logs.length - 1; i >= 0; i--) {
-                const line = logData.logs[i];
-                
-                const match = line.match(/PROGRESS:\s*(\d+)/i);
-                if (match) {
-                  lastProgress = Math.max(lastProgress, parseInt(match[1], 10));
-                }
-                
-                const matchScene = line.match(/Processing Shot\s*(\d+)\/(\d+)/i);
-                if (matchScene) {
-                  const currentScene = parseInt(matchScene[1], 10);
-                  const totalScenes = parseInt(matchScene[2], 10);
-                  if (totalScenes > 0) {
-                    lastProgress = Math.max(lastProgress, Math.round((currentScene / totalScenes) * 60));
+              // Set up compile log listener
+              api.onCompileLog((line: string) => {
+                setSystemLogs(prev => {
+                  if (!line.trim()) return prev;
+                  
+                  // Bỏ qua dòng tiến độ để không spam giao diện log
+                  if (/^PROGRESS:\s*\d+/i.test(line.trim())) {
+                    return prev;
                   }
-                }
-                
-                if (line.includes("Success! Final video")) {
-                  success = true;
-                }
-                if (line.includes("Tiến trình kết thúc với mã lỗi:")) {
-                  finished = true;
-                  if (line.includes("mã lỗi: 0")) {
-                    success = true;
+                  
+                  const matchScene = line.match(/Processing Shot\s*(\d+)\/(\d+)/i);
+                  if (matchScene) {
+                    const currentScene = parseInt(matchScene[1], 10);
+                    const totalScenes = parseInt(matchScene[2], 10);
+                    if (totalScenes > 0) {
+                      const pct = Math.round((currentScene / totalScenes) * 60);
+                      setRenderProgress(pct);
+                      queueStore.updateProgress(compileId, pct);
+                    }
                   }
-                }
-              }
-              
-              // Lọc bỏ các dòng PROGRESS khi hiển thị ra hệ thống logs
-              const filteredLogs = logData.logs.filter((line: string) => !/^PROGRESS:\s*\d+/i.test(line.trim()));
-              setSystemLogs(filteredLogs);
-              
-              setRenderProgress(lastProgress || (success ? 100 : 0));
-              
-              if (finished || success) {
-                clearInterval(pollInterval);
+                  return [...prev, line];
+                });
+              });
+
+              // Set up progress listener
+              api.onCompileProgress((percent: number) => {
+                setRenderProgress(percent);
+                queueStore.updateProgress(compileId, percent);
+              });
+
+              // Set up finish listener
+              api.onCompileFinished((code: number, finalOutputDir: string) => {
                 setIsRendering(false);
-                if (success) {
+                if (code === 0) {
                   setRenderStatus("Xuất phim thành công!");
-                  setSystemLogs(prev => [...prev, `[System] Thành công! File lưu tại: ${outputDir}\\final_compiled_video.mp4`]);
+                  setSystemLogs(prev => [...prev, `[System] Thành công! File lưu tại: ${finalOutputDir}\\final_compiled_video.mp4`]);
+                  alert(`Dựng phim thành công! Video đã lưu tại: ${finalOutputDir}\\final_compiled_video.mp4`);
+                  resolve();
                 } else {
                   setRenderStatus("Dựng phim thất bại");
+                  alert(`Dựng phim thất bại với mã lỗi: ${code}`);
+                  reject(new Error(`Dựng phim thất bại với mã lỗi: ${code}`));
                 }
-              }
-            }
-          } catch (err) {
-            console.error("Error polling logs:", err);
-          }
-        }, 1000);
+              });
 
-      } catch (err: any) {
-        setIsRendering(false);
-        setRenderStatus("Lỗi kết xuất");
-        alert(`Không thể bắt đầu tiến trình xuất video: ${err.message}`);
+              // Trigger compilation
+              const projectCopy: any = { ...project };
+              if (safeSubtitleStyle) {
+                projectCopy.style = {
+                  ...safeSubtitleStyle,
+                  burnSubtitles
+                };
+              }
+              projectCopy.exportMode = exportVideoType;
+
+              api.compileVideo(projectCopy, reconstructedSrt, outputDir);
+            } catch (err: any) {
+              setIsRendering(false);
+              setRenderStatus("Lỗi kết xuất");
+              alert(`Không thể bắt đầu tiến trình xuất video: ${err.message}`);
+              reject(err);
+            }
+          } else {
+            // Browser Web Fallback
+            try {
+              fetch("/api/export", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  project,
+                  srtText: reconstructedSrt,
+                  projectPath: outputDir,
+                  exportMode: exportVideoType,
+                  style: {
+                    ...safeSubtitleStyle,
+                    burnSubtitles
+                  }
+                })
+              }).then(async res => {
+                if (!res.ok) {
+                  const errData = await res.json();
+                  throw new Error(errData.error || `HTTP error ${res.status}`);
+                }
+
+                // Poll logs from `/api/logs` in real-time
+                const pollInterval = setInterval(async () => {
+                  try {
+                    const logRes = await fetch("/api/logs");
+                    if (!logRes.ok) return;
+                    const logData = await logRes.json();
+                    if (logData.success && logData.logs) {
+                      let lastProgress = 0;
+                      let finished = false;
+                      let success = false;
+                      
+                      for (let i = logData.logs.length - 1; i >= 0; i--) {
+                        const line = logData.logs[i];
+                        
+                        const match = line.match(/PROGRESS:\s*(\d+)/i);
+                        if (match) {
+                          lastProgress = Math.max(lastProgress, parseInt(match[1], 10));
+                        }
+                        
+                        const matchScene = line.match(/Processing Shot\s*(\d+)\/(\d+)/i);
+                        if (matchScene) {
+                          const currentScene = parseInt(matchScene[1], 10);
+                          const totalScenes = parseInt(matchScene[2], 10);
+                          if (totalScenes > 0) {
+                            lastProgress = Math.max(lastProgress, Math.round((currentScene / totalScenes) * 60));
+                          }
+                        }
+                        
+                        if (line.includes("Success! Final video")) {
+                          success = true;
+                        }
+                        if (line.includes("Tiến trình kết thúc với mã lỗi:")) {
+                          finished = true;
+                          if (line.includes("mã lỗi: 0")) {
+                            success = true;
+                          }
+                        }
+                      }
+                      
+                      const filteredLogs = logData.logs.filter((line: string) => !/^PROGRESS:\s*\d+/i.test(line.trim()));
+                      setSystemLogs(filteredLogs);
+                      
+                      const finalProgress = lastProgress || (success ? 100 : 0);
+                      setRenderProgress(finalProgress);
+                      queueStore.updateProgress(compileId, finalProgress);
+                      
+                      if (finished || success) {
+                        clearInterval(pollInterval);
+                        setIsRendering(false);
+                        if (success) {
+                          setRenderStatus("Xuất phim thành công!");
+                          setSystemLogs(prev => [...prev, `[System] Thành công! File lưu tại: ${outputDir}\\final_compiled_video.mp4`]);
+                          resolve();
+                        } else {
+                          setRenderStatus("Dựng phim thất bại");
+                          reject(new Error("Dựng phim thất bại qua API"));
+                        }
+                      }
+                    }
+                  } catch (err) {
+                    console.error("Error polling logs:", err);
+                  }
+                }, 1000);
+
+              }).catch(err => {
+                setIsRendering(false);
+                setRenderStatus("Lỗi kết xuất");
+                alert(`Không thể bắt đầu tiến trình xuất video: ${err.message}`);
+                reject(err);
+              });
+            } catch (err: any) {
+              setIsRendering(false);
+              setRenderStatus("Lỗi kết xuất");
+              alert(`Không thể bắt đầu tiến trình xuất video: ${err.message}`);
+              reject(err);
+            }
+          }
+        });
       }
-    }
+    });
   };
 
 
@@ -1794,6 +2050,16 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
           </button>
           
           <button
+            onClick={() => {
+              setShowHooksModal(true);
+            }}
+            className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white border border-emerald-500/20 hover:border-emerald-400/50 hover:shadow-[0_0_15px_rgba(16,185,129,0.25)] rounded-xl text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 cursor-pointer shadow-lg active:scale-[0.98]"
+            title="Tạo Hook mở đầu cho video"
+          >
+            <Sparkles className="w-3.5 h-3.5" /> Tạo Hook mở đầu
+          </button>
+
+          <button
             disabled={isRendering || validShots.filter(s => !!s.videoUrl || !!s.imageUrl).length === 0}
             onClick={() => {
               setShowExportModal(true);
@@ -1882,17 +2148,17 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 
                 {/* Subtitle Hardsubs Preview Overlay */}
                 {showSubtitles && activeSubtitle && (() => {
-                  const isFullWidth = subtitleStyle.bgFullWidth;
-                  const bgOpacityVal = subtitleStyle.bgOpacity !== undefined ? subtitleStyle.bgOpacity : 0.4;
-                  const bgHeightVal = (subtitleStyle.bgHeight !== undefined ? subtitleStyle.bgHeight : 80) * 0.8;
-                  const bottomMarginVal = (subtitleStyle.bottomMargin !== undefined ? subtitleStyle.bottomMargin : 24) * 0.8;
+                  const isFullWidth = safeSubtitleStyle.bgFullWidth;
+                  const bgOpacityVal = safeSubtitleStyle.bgOpacity !== undefined ? safeSubtitleStyle.bgOpacity : 0.4;
+                  const bgHeightVal = (safeSubtitleStyle.bgHeight !== undefined ? safeSubtitleStyle.bgHeight : 80) * 0.8;
+                  const bottomMarginVal = (safeSubtitleStyle.bottomMargin !== undefined ? safeSubtitleStyle.bottomMargin : 24) * 0.8;
                   
                   // Compute positioning styles
                   const positionStyle: React.CSSProperties = {};
-                  if (subtitleStyle.verticalAlign === 'top') {
+                  if (safeSubtitleStyle.verticalAlign === 'top') {
                     positionStyle.top = `${bottomMarginVal}px`;
                     positionStyle.bottom = 'auto';
-                  } else if (subtitleStyle.verticalAlign === 'center') {
+                  } else if (safeSubtitleStyle.verticalAlign === 'center') {
                     positionStyle.top = '50%';
                     positionStyle.bottom = 'auto';
                     positionStyle.transform = 'translateY(-50%)';
@@ -1916,7 +2182,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                       right: 0,
                       width: '100%',
                       height: `${bgHeightVal}px`,
-                      backgroundColor: bgOpacityVal > 0 ? hexToRgba(subtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
+                      backgroundColor: bgOpacityVal > 0 ? hexToRgba(safeSubtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -1926,10 +2192,10 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                       zIndex: 10,
                     };
 
-                    if (subtitleStyle.verticalAlign === 'top') {
+                    if (safeSubtitleStyle.verticalAlign === 'top') {
                       fullWidthBoxStyle.top = 0;
                       fullWidthBoxStyle.bottom = 'auto';
-                    } else if (subtitleStyle.verticalAlign === 'center') {
+                    } else if (safeSubtitleStyle.verticalAlign === 'center') {
                       fullWidthBoxStyle.top = '50%';
                       fullWidthBoxStyle.bottom = 'auto';
                       fullWidthBoxStyle.transform = 'translateY(-50%)';
@@ -1945,18 +2211,18 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                       >
                         <span 
                           style={{
-                            color: subtitleStyle.textColor,
-                            fontFamily: getCssFontFamily(subtitleStyle.fontFamily),
-                            fontSize: `${subtitleStyle.fontSize * 0.8}px`,
-                            textShadow: subtitleStyle.outlineWidth > 0 ? `
-                              -${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},  
-                               ${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                              -${subtitleStyle.outlineWidth}px  ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                               ${subtitleStyle.outlineWidth}px  ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                              -1px 0px 0px ${subtitleStyle.outlineColor},
-                               1px 0px 0px ${subtitleStyle.outlineColor},
-                               0px -1px 0px ${subtitleStyle.outlineColor},
-                               0px  1px 0px ${subtitleStyle.outlineColor}
+                            color: safeSubtitleStyle.textColor,
+                            fontFamily: getCssFontFamily(safeSubtitleStyle.fontFamily),
+                            fontSize: `${safeSubtitleStyle.fontSize * 0.8}px`,
+                            textShadow: safeSubtitleStyle.outlineWidth > 0 ? `
+                              -${safeSubtitleStyle.outlineWidth}px -${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},  
+                               ${safeSubtitleStyle.outlineWidth}px -${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                              -${safeSubtitleStyle.outlineWidth}px  ${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                               ${safeSubtitleStyle.outlineWidth}px  ${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                              -1px 0px 0px ${safeSubtitleStyle.outlineColor},
+                               1px 0px 0px ${safeSubtitleStyle.outlineColor},
+                               0px -1px 0px ${safeSubtitleStyle.outlineColor},
+                               0px  1px 0px ${safeSubtitleStyle.outlineColor}
                             ` : 'none',
                             whiteSpace: 'pre-wrap',
                             textAlign: 'center',
@@ -1964,7 +2230,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                           }}
                           className="font-semibold leading-relaxed"
                         >
-                          {wrapTextClient(activeSubtitle, subtitleStyle.maxLineLength)}
+                          {wrapTextClient(activeSubtitle, safeSubtitleStyle.maxLineLength)}
                         </span>
                       </div>
                     );
@@ -1976,25 +2242,25 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                       >
                         <span 
                           style={{
-                            color: subtitleStyle.textColor,
-                            fontFamily: getCssFontFamily(subtitleStyle.fontFamily),
-                            fontSize: `${subtitleStyle.fontSize * 0.8}px`,
-                            backgroundColor: bgOpacityVal > 0 ? hexToRgba(subtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
-                            textShadow: subtitleStyle.outlineWidth > 0 ? `
-                              -${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},  
-                               ${subtitleStyle.outlineWidth}px -${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                              -${subtitleStyle.outlineWidth}px  ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                               ${subtitleStyle.outlineWidth}px  ${subtitleStyle.outlineWidth}px 0 ${subtitleStyle.outlineColor},
-                              -1px 0px 0px ${subtitleStyle.outlineColor},
-                               1px 0px 0px ${subtitleStyle.outlineColor},
-                               0px -1px 0px ${subtitleStyle.outlineColor},
-                               0px  1px 0px ${subtitleStyle.outlineColor}
+                            color: safeSubtitleStyle.textColor,
+                            fontFamily: getCssFontFamily(safeSubtitleStyle.fontFamily),
+                            fontSize: `${safeSubtitleStyle.fontSize * 0.8}px`,
+                            backgroundColor: bgOpacityVal > 0 ? hexToRgba(safeSubtitleStyle.bgColor || "#000000", bgOpacityVal) : 'transparent',
+                            textShadow: safeSubtitleStyle.outlineWidth > 0 ? `
+                              -${safeSubtitleStyle.outlineWidth}px -${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},  
+                               ${safeSubtitleStyle.outlineWidth}px -${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                              -${safeSubtitleStyle.outlineWidth}px  ${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                               ${safeSubtitleStyle.outlineWidth}px  ${safeSubtitleStyle.outlineWidth}px 0 ${safeSubtitleStyle.outlineColor},
+                              -1px 0px 0px ${safeSubtitleStyle.outlineColor},
+                               1px 0px 0px ${safeSubtitleStyle.outlineColor},
+                               0px -1px 0px ${safeSubtitleStyle.outlineColor},
+                               0px  1px 0px ${safeSubtitleStyle.outlineColor}
                             ` : 'none',
                             whiteSpace: 'pre-wrap'
                           }}
                           className="px-4.5 py-2.5 backdrop-blur-md border border-white/5 font-semibold rounded-xl text-center shadow-2xl max-w-[85%] leading-relaxed"
                         >
-                          {wrapTextClient(activeSubtitle, subtitleStyle.maxLineLength)}
+                          {wrapTextClient(activeSubtitle, safeSubtitleStyle.maxLineLength)}
                         </span>
                       </div>
                     );
@@ -2109,8 +2375,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col gap-1">
                   <label className="text-[8px] font-mono text-zinc-500 font-bold uppercase">Font chữ (Font Family):</label>
                   <select
-                    value={subtitleStyle.fontFamily}
-                    onChange={(e) => setSubtitleStyle({ ...subtitleStyle, fontFamily: e.target.value })}
+                    value={safeSubtitleStyle.fontFamily}
+                    onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, fontFamily: e.target.value })}
                     className="bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[10px] text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     <option value="sans-serif">Sans-Serif (Arial, Calibri)</option>
@@ -2136,15 +2402,15 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                     <span>Cỡ chữ gốc (Font Size):</span>
-                    <span className="text-indigo-400 font-bold">{subtitleStyle.fontSize}px</span>
+                    <span className="text-indigo-400 font-bold">{safeSubtitleStyle.fontSize}px</span>
                   </div>
                   <input
                     type="range"
                     min="12"
                     max="48"
                     step="1"
-                    value={subtitleStyle.fontSize}
-                    onChange={(e) => setSubtitleStyle({ ...subtitleStyle, fontSize: parseInt(e.target.value) })}
+                    value={safeSubtitleStyle.fontSize}
+                    onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, fontSize: parseInt(e.target.value) })}
                     className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
                   />
                 </div>
@@ -2152,15 +2418,15 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                     <span>Độ dài dòng tối đa (Max Line):</span>
-                    <span className="text-indigo-400 font-bold">{subtitleStyle.maxLineLength} ký tự</span>
+                    <span className="text-indigo-400 font-bold">{safeSubtitleStyle.maxLineLength} ký tự</span>
                   </div>
                   <input
                     type="range"
                     min="15"
                     max="60"
                     step="1"
-                    value={subtitleStyle.maxLineLength}
-                    onChange={(e) => setSubtitleStyle({ ...subtitleStyle, maxLineLength: parseInt(e.target.value) })}
+                    value={safeSubtitleStyle.maxLineLength}
+                    onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, maxLineLength: parseInt(e.target.value) })}
                     className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
                   />
                 </div>
@@ -2168,15 +2434,15 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                     <span>Số lượng từ tối đa (Max Words):</span>
-                    <span className="text-indigo-400 font-bold">{subtitleStyle.maxWordsLimit || 7} từ</span>
+                    <span className="text-indigo-400 font-bold">{safeSubtitleStyle.maxWordsLimit || 7} từ</span>
                   </div>
                   <input
                     type="range"
                     min="3"
                     max="20"
                     step="1"
-                    value={subtitleStyle.maxWordsLimit || 7}
-                    onChange={(e) => setSubtitleStyle({ ...subtitleStyle, maxWordsLimit: parseInt(e.target.value) })}
+                    value={safeSubtitleStyle.maxWordsLimit || 7}
+                    onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, maxWordsLimit: parseInt(e.target.value) })}
                     className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
                   />
                 </div>
@@ -2187,8 +2453,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   <div className="flex flex-col gap-1">
                     <label className="text-[8px] font-mono text-zinc-500 font-bold uppercase">Vị trí dọc (Align):</label>
                     <select
-                      value={subtitleStyle.verticalAlign}
-                      onChange={(e) => setSubtitleStyle({ ...subtitleStyle, verticalAlign: e.target.value })}
+                      value={safeSubtitleStyle.verticalAlign}
+                      onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, verticalAlign: e.target.value })}
                       className="bg-zinc-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-[10px] text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
                     >
                       <option value="top">Top (Trên)</option>
@@ -2200,15 +2466,15 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   <div className="flex flex-col gap-1">
                     <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                       <span>Nền mờ (Background):</span>
-                      <span className="text-indigo-400 font-bold">{Math.round(subtitleStyle.bgOpacity * 100)}%</span>
+                      <span className="text-indigo-400 font-bold">{Math.round(safeSubtitleStyle.bgOpacity * 100)}%</span>
                     </div>
                     <input
                       type="range"
                       min="0"
                       max="1"
                       step="0.05"
-                      value={subtitleStyle.bgOpacity}
-                      onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bgOpacity: parseFloat(e.target.value) })}
+                      value={safeSubtitleStyle.bgOpacity}
+                      onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, bgOpacity: parseFloat(e.target.value) })}
                       className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none mt-2"
                     />
                   </div>
@@ -2218,8 +2484,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   <label className="flex items-center gap-2 bg-black/20 hover:bg-black/30 border border-white/5 rounded-lg p-2 cursor-pointer select-none transition-colors">
                     <input
                       type="checkbox"
-                      checked={subtitleStyle.bgFullWidth || false}
-                      onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bgFullWidth: e.target.checked })}
+                      checked={safeSubtitleStyle.bgFullWidth || false}
+                      onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, bgFullWidth: e.target.checked })}
                       className="rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 bg-zinc-950 accent-indigo-500"
                     />
                     <div className="flex flex-col">
@@ -2230,16 +2496,16 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   <div className="flex flex-col gap-1">
                     <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                       <span>Chiều cao nền:</span>
-                      <span className="text-indigo-400 font-bold">{subtitleStyle.bgHeight !== undefined ? subtitleStyle.bgHeight : 80}px</span>
+                      <span className="text-indigo-400 font-bold">{safeSubtitleStyle.bgHeight !== undefined ? safeSubtitleStyle.bgHeight : 80}px</span>
                     </div>
                     <input
                       type="range"
                       min="40"
                       max="250"
                       step="5"
-                      disabled={!(subtitleStyle.bgFullWidth || false)}
-                      value={subtitleStyle.bgHeight !== undefined ? subtitleStyle.bgHeight : 80}
-                      onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bgHeight: parseInt(e.target.value) })}
+                      disabled={!(safeSubtitleStyle.bgFullWidth || false)}
+                      value={safeSubtitleStyle.bgHeight !== undefined ? safeSubtitleStyle.bgHeight : 80}
+                      onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, bgHeight: parseInt(e.target.value) })}
                       className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none disabled:opacity-30"
                     />
                   </div>
@@ -2248,16 +2514,16 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col gap-1">
                   <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                     <span>Cự ly lề dọc (Margin):</span>
-                    <span className="text-indigo-400 font-bold">{subtitleStyle.bottomMargin !== undefined ? subtitleStyle.bottomMargin : 24}px</span>
+                    <span className="text-indigo-400 font-bold">{safeSubtitleStyle.bottomMargin !== undefined ? safeSubtitleStyle.bottomMargin : 24}px</span>
                   </div>
                   <input
                     type="range"
                     min="0"
                     max="200"
                     step="2"
-                    disabled={subtitleStyle.verticalAlign === 'center'}
-                    value={subtitleStyle.bottomMargin !== undefined ? subtitleStyle.bottomMargin : 24}
-                    onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bottomMargin: parseInt(e.target.value) })}
+                    disabled={safeSubtitleStyle.verticalAlign === 'center'}
+                    value={safeSubtitleStyle.bottomMargin !== undefined ? safeSubtitleStyle.bottomMargin : 24}
+                    onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, bottomMargin: parseInt(e.target.value) })}
                     className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none disabled:opacity-30"
                   />
                 </div>
@@ -2268,11 +2534,11 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                     <div className="flex items-center gap-1">
                       <input
                         type="color"
-                        value={subtitleStyle.textColor}
-                        onChange={(e) => setSubtitleStyle({ ...subtitleStyle, textColor: e.target.value })}
+                        value={safeSubtitleStyle.textColor}
+                        onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, textColor: e.target.value })}
                         className="w-6 h-6 rounded border border-white/10 bg-transparent cursor-pointer"
                       />
-                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{subtitleStyle.textColor}</span>
+                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{safeSubtitleStyle.textColor}</span>
                     </div>
                   </div>
 
@@ -2281,11 +2547,11 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                     <div className="flex items-center gap-1">
                       <input
                         type="color"
-                        value={subtitleStyle.outlineColor}
-                        onChange={(e) => setSubtitleStyle({ ...subtitleStyle, outlineColor: e.target.value })}
+                        value={safeSubtitleStyle.outlineColor}
+                        onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, outlineColor: e.target.value })}
                         className="w-6 h-6 rounded border border-white/10 bg-transparent cursor-pointer"
                       />
-                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{subtitleStyle.outlineColor}</span>
+                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{safeSubtitleStyle.outlineColor}</span>
                     </div>
                   </div>
 
@@ -2294,26 +2560,26 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                     <div className="flex items-center gap-1">
                       <input
                         type="color"
-                        value={subtitleStyle.bgColor || "#000000"}
-                        onChange={(e) => setSubtitleStyle({ ...subtitleStyle, bgColor: e.target.value })}
+                        value={safeSubtitleStyle.bgColor || "#000000"}
+                        onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, bgColor: e.target.value })}
                         className="w-6 h-6 rounded border border-white/10 bg-transparent cursor-pointer"
                       />
-                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{subtitleStyle.bgColor || "#000000"}</span>
+                      <span className="text-[8px] font-mono text-zinc-400 uppercase leading-none">{safeSubtitleStyle.bgColor || "#000000"}</span>
                     </div>
                   </div>
 
                   <div className="flex flex-col gap-1">
                     <div className="flex justify-between text-[8px] font-mono text-zinc-500 font-bold uppercase">
                       <span>Độ dày:</span>
-                      <span className="text-indigo-400 font-bold">{subtitleStyle.outlineWidth}px</span>
+                      <span className="text-indigo-400 font-bold">{safeSubtitleStyle.outlineWidth}px</span>
                     </div>
                     <input
                       type="range"
                       min="0"
                       max="6"
                       step="1"
-                      value={subtitleStyle.outlineWidth}
-                      onChange={(e) => setSubtitleStyle({ ...subtitleStyle, outlineWidth: parseInt(e.target.value) })}
+                      value={safeSubtitleStyle.outlineWidth}
+                      onChange={(e) => setSubtitleStyle({ ...safeSubtitleStyle, outlineWidth: parseInt(e.target.value) })}
                       className="h-1 bg-white/5 rounded-lg appearance-none cursor-pointer accent-indigo-500 focus:outline-none"
                     />
                   </div>
@@ -2945,6 +3211,238 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 Generate Video Pro
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showHooksModal && (
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fade-in">
+          <div className="bg-zinc-950 border border-white/10 rounded-3xl w-full max-w-6xl h-[85vh] overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.8)] flex flex-col relative">
+            
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-black/40">
+              <div className="flex items-center gap-2.5">
+                <Sparkles className="w-5 h-5 text-emerald-400 animate-pulse" />
+                <div>
+                  <h2 className="text-sm font-black uppercase text-white tracking-widest leading-none">Thiết Kế Hook Mở Đầu & Chèn Intro</h2>
+                  <span className="text-[9px] font-mono text-zinc-400 mt-1 block">Chọn các phân cảnh từ kịch bản để tạo đoạn Hook thu hút người xem</span>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowHooksModal(false);
+                  setIsPlayingHooksPreview(false);
+                }}
+                className="text-zinc-500 hover:text-white transition-colors text-xs font-mono font-bold cursor-pointer bg-zinc-900 border border-white/10 px-3 py-1.5 rounded-xl hover:bg-zinc-800"
+              >
+                [ĐÓNG]
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden min-h-0 bg-zinc-950/40">
+              
+              {/* Left Column: Player Preview (lg:col-span-7) */}
+              <div className="lg:col-span-7 p-6 flex flex-col gap-4 justify-between border-r border-white/5 min-h-0">
+                <div className="flex-1 aspect-video bg-black rounded-2xl border border-white/10 overflow-hidden relative shadow-inner flex items-center justify-center group">
+                  
+                  {hookShots.length > 0 && hookShots[currentHookPreviewIndex] ? (
+                    <>
+                      {hookShots[currentHookPreviewIndex]!.videoUrl ? (
+                        <video
+                          ref={hooksVideoRef}
+                          src={hookShots[currentHookPreviewIndex]!.videoUrl}
+                          autoPlay={isPlayingHooksPreview}
+                          onEnded={handleHooksVideoEnded}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <img
+                          src={hookShots[currentHookPreviewIndex]!.imageUrl}
+                          className="w-full h-full object-cover animate-kenburns"
+                          style={{
+                            '--kenburns-duration': '4s',
+                            animationPlayState: isPlayingHooksPreview ? 'running' : 'paused'
+                          } as React.CSSProperties}
+                          alt="Hook preview shot"
+                        />
+                      )}
+                      
+                      {/* Hook Label overlay */}
+                      <div className="absolute top-4 left-4 z-20 px-2.5 py-1 bg-black/70 backdrop-blur-md border border-white/10 rounded-lg text-[8px] font-bold text-emerald-400 uppercase tracking-widest">
+                        Hook #{currentHookPreviewIndex + 1}: Phân Cảnh {hookShots[currentHookPreviewIndex]!.id}
+                      </div>
+
+                      {/* Subtitle overlay */}
+                      {activeHookSubText && (
+                        <div className="absolute bottom-6 left-6 right-6 flex justify-center pointer-events-none select-none z-10">
+                          <span className="px-4 py-2 bg-black/60 backdrop-blur-md border border-white/5 font-semibold rounded-xl text-center text-xs text-white max-w-[85%] leading-relaxed shadow-2xl">
+                            {activeHookSubText}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-center p-6 text-zinc-500 flex flex-col items-center gap-2">
+                      <Film className="w-10 h-10 stroke-1 text-zinc-600 animate-bounce" />
+                      <span className="text-[10px] font-mono uppercase tracking-wider">Chưa chọn Hook nào</span>
+                      <p className="text-[9px] text-zinc-600 max-w-xs leading-normal">
+                        Vui lòng tích chọn các câu phụ đề ở bảng bên phải để bắt đầu thiết kế đoạn Hook mở đầu.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Player Controls */}
+                <div className="flex items-center justify-between bg-zinc-900/40 border border-white/5 rounded-2xl p-3">
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={hookShots.length === 0}
+                      onClick={() => {
+                        if (isPlayingHooksPreview) {
+                          setIsPlayingHooksPreview(false);
+                        } else {
+                          setCurrentHookPreviewIndex(0);
+                          setIsPlayingHooksPreview(true);
+                        }
+                      }}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 active:scale-[0.98]"
+                    >
+                      {isPlayingHooksPreview ? "Tạm Dừng" : "Phát Thử (Play)"}
+                    </button>
+                    <button
+                      disabled={hookShots.length === 0}
+                      onClick={() => {
+                        setIsPlayingHooksPreview(false);
+                        setCurrentHookPreviewIndex(0);
+                      }}
+                      className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-300 rounded-xl text-[9px] font-bold uppercase transition-all cursor-pointer"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  
+                  {hookShots.length > 0 && (
+                    <div className="flex items-center gap-2 text-[9px] font-mono text-zinc-400">
+                      <span>Đang phát:</span>
+                      <span className="text-white font-bold">{currentHookPreviewIndex + 1} / {hookShots.length}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column: Subtitle List (lg:col-span-5) */}
+              <div className="lg:col-span-5 p-6 flex flex-col gap-4 overflow-hidden min-h-0">
+                <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-zinc-300">Danh Sách Phụ Đề Câu Chuyện</span>
+                  {tempSelectedHooks.length > 0 && (
+                    <button
+                      onClick={() => setTempSelectedHooks([])}
+                      className="text-[8px] font-mono text-red-400 hover:text-red-300 uppercase cursor-pointer transition-colors"
+                    >
+                      Xóa tất cả ({tempSelectedHooks.length})
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2 custom-scrollbar">
+                  {srtData.map((block) => {
+                    const isSelected = tempSelectedHooks.includes(block.index);
+                    const selectedIdx = tempSelectedHooks.indexOf(block.index);
+                    
+                    const blockIdxNum = parseInt(block.index, 10);
+                    const blockOrigId = blockIdxNum >= 1000 ? Math.floor(blockIdxNum / 1000) : blockIdxNum;
+                    const isHidden = (project.hiddenSrtIndexes || []).includes(block.index) || (project.hiddenSrtIndexes || []).includes(String(blockOrigId));
+
+                    return (
+                      <div
+                        key={block.index}
+                        onClick={() => {
+                          if (isSelected) {
+                            setTempSelectedHooks(prev => prev.filter(x => x !== block.index));
+                          } else {
+                            setTempSelectedHooks(prev => [...prev, block.index]);
+                          }
+                        }}
+                        className={cn(
+                          "p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 select-none",
+                          isSelected
+                            ? "bg-emerald-500/10 border-emerald-500/30 text-white shadow-[0_0_10px_rgba(16,185,129,0.05)]"
+                            : "bg-zinc-900/40 border-white/5 text-zinc-400 hover:bg-zinc-900/80 hover:border-white/10"
+                        )}
+                      >
+                        <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                          <span className={cn(
+                            "text-[8px] font-mono uppercase tracking-wider leading-none",
+                            isSelected ? "text-emerald-400 font-bold" : "text-zinc-500"
+                          )}>
+                            Sub #{block.index} ({block.time.split("-->")[0].trim()})
+                          </span>
+                          <p className={cn(
+                            "text-[10px] line-clamp-2 mt-1",
+                            isSelected ? "text-white font-medium" : "text-zinc-300",
+                            isHidden && "text-zinc-600 line-through"
+                          )}>
+                            {block.text}
+                          </p>
+                        </div>
+
+                        {/* Checkbox and Order number */}
+                        <div className="shrink-0 flex items-center justify-center">
+                          {isSelected ? (
+                            <div className="w-5 h-5 rounded-full bg-emerald-500 text-black text-[9px] font-black flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                              {selectedIdx + 1}
+                            </div>
+                          ) : (
+                            <div className="w-5 h-5 rounded-full border border-white/20 hover:border-white/40 transition-colors" />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-white/5 flex items-center justify-between bg-black/40">
+              <div className="flex items-center gap-3">
+                {hasIntroVideo ? (
+                  <div className="flex items-center gap-1.5 text-[9px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 rounded-lg">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Phát hiện Intro Video ({introVideoFile} - {introDuration.toFixed(1)}s)
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 text-[9px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 rounded-lg">
+                    <AlertCircle className="w-3.5 h-3.5" /> Không thấy Video Intro trong thư mục /intro
+                  </div>
+                )}
+                {tempSelectedHooks.length > 0 && (
+                  <span className="text-[9px] font-mono text-zinc-400">
+                    Đã chọn <span className="text-white font-bold">{tempSelectedHooks.length}</span> phân cảnh Hook
+                  </span>
+                )}
+              </div>
+              
+              <div className="flex items-center gap-2.5">
+                <button
+                  onClick={() => {
+                    setShowHooksModal(false);
+                    setIsPlayingHooksPreview(false);
+                  }}
+                  className="px-4 py-2 bg-zinc-950 hover:bg-zinc-900 border border-white/5 text-zinc-400 hover:text-white rounded-xl text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer active:scale-[0.98]"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={handleSaveHooks}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white border border-emerald-500/20 hover:border-emerald-400/50 hover:shadow-[0_0_15px_rgba(16,185,129,0.35)] rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer active:scale-[0.98]"
+                >
+                  Chèn Hook + Intro
+                </button>
+              </div>
+            </div>
+
           </div>
         </div>
       )}

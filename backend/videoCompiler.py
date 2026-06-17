@@ -1007,8 +1007,8 @@ def compile_project(config_path, srt_path, output_dir):
     bottom_margin = subtitle_style.get('bottomMargin', 24)
     bg_color = hex_to_rgb(subtitle_style.get('bgColor', '#000000'), (0, 0, 0))
 
-    shots = project.get('shots', [])
-    if not shots:
+    shots_raw = project.get('shots', [])
+    if not shots_raw:
         log("FATAL: No shots found in configuration.")
         return 1
 
@@ -1034,19 +1034,18 @@ def compile_project(config_path, srt_path, output_dir):
         except Exception:
             block['orig_id'] = 0
 
-    # Calculate target durations dynamically based on consecutive shot timestamps
-    start_times = []
-    for shot in shots:
-        start_times.append(parse_time_to_seconds(shot.get('time', '')))
+    # Calculate target durations dynamically based on consecutive original shot timestamps
+    original_shots = list(shots_raw)
+    start_times = [parse_time_to_seconds(shot.get('time', '')) for shot in original_shots]
 
     max_subtitle_end = 0.0
     if srt_blocks:
         max_subtitle_end = max(block['end'] for block in srt_blocks)
 
-    shot_durations = []
-    num_shots = len(shots)
-    for i in range(num_shots):
-        if i < num_shots - 1:
+    orig_shot_durations = []
+    num_orig_shots = len(original_shots)
+    for i in range(num_orig_shots):
+        if i < num_orig_shots - 1:
             dur = start_times[i+1] - start_times[i]
         else:
             if max_subtitle_end > start_times[i]:
@@ -1054,7 +1053,86 @@ def compile_project(config_path, srt_path, output_dir):
             else:
                 dur = 6.0
         dur = max(0.5, dur)
-        shot_durations.append(dur)
+        orig_shot_durations.append(dur)
+
+    # Process Hooks
+    hooks = project.get('hooks', [])
+    prepended_shots = []
+    prepended_durations = []
+    hooks_dur = 0.0
+    hooks_count = len(hooks)
+
+    def find_shot_for_sub_index(sub_idx_str):
+        try:
+            sub_idx_val = int(sub_idx_str)
+            orig_id = sub_idx_val // 1000 if sub_idx_val >= 1000 else sub_idx_val
+            for shot in original_shots:
+                shot_range = shot.get('range')
+                if shot_range:
+                    parts = shot_range.split("-")
+                    start_idx = int(parts[0])
+                    end_idx = int(parts[1]) if len(parts) > 1 else start_idx
+                    if orig_id >= start_idx and orig_id <= end_idx:
+                        return shot
+                elif shot.get('id') == orig_id:
+                    return shot
+        except Exception:
+            pass
+        return None
+
+    prepended_srt_blocks = []
+    if hooks:
+        shot_dur_map = {shot.get('id'): orig_shot_durations[idx] for idx, shot in enumerate(original_shots)}
+        
+        acc_time = 0.0
+        for h_idx, sub_idx in enumerate(hooks):
+            h_shot = find_shot_for_sub_index(sub_idx)
+            if h_shot:
+                copy_shot = dict(h_shot)
+                copy_shot['is_hook'] = True
+                copy_shot['original_id'] = h_shot.get('id')
+                prepended_shots.append(copy_shot)
+                
+                dur = shot_dur_map.get(h_shot.get('id'), 4.0)
+                prepended_durations.append(dur)
+                hooks_dur += dur
+                
+                # Clone and align subtitle blocks for hooks
+                try:
+                    sub_idx_val = int(sub_idx)
+                    orig_id = sub_idx_val // 1000 if sub_idx_val >= 1000 else sub_idx_val
+                    
+                    orig_shot_idx = original_shots.index(h_shot)
+                    orig_shot_start = start_times[orig_shot_idx]
+                    
+                    matching_blocks = [b for b in srt_blocks if b.get('orig_id') == orig_id]
+                    for block in matching_blocks:
+                        copy_block = dict(block)
+                        rel_start = block['start'] - orig_shot_start
+                        rel_end = block['end'] - orig_shot_start
+                        
+                        copy_block['start'] = acc_time + rel_start
+                        copy_block['end'] = acc_time + rel_end
+                        copy_block['index'] = f"hook_{h_idx}_{block['index']}"
+                        copy_block['is_hook'] = True
+                        
+                        prepended_srt_blocks.append(copy_block)
+                except Exception as e:
+                    log(f"[Warning] Error copying srt block for hook {sub_idx}: {e}")
+                
+                acc_time += dur
+
+        # Shift original subtitles by hooks_dur
+        for block in srt_blocks:
+            block['start'] += hooks_dur
+            block['end'] += hooks_dur
+
+        if project.get('introSubIndex') == 'hooks':
+            project['introSubIndex'] = str(hooks_count)
+
+    shots = prepended_shots + original_shots
+    shot_durations = prepended_durations + orig_shot_durations
+    srt_blocks = prepended_srt_blocks + srt_blocks
 
     # Scan for intro/outro and check insert position
     intro_video_path = None
@@ -1113,8 +1191,8 @@ def compile_project(config_path, srt_path, output_dir):
     first_video_source = None
     # Prioritize scanning local files to avoid network delay
     for idx, shot in enumerate(shots):
-        stt = idx + 1
-        local_cand = find_local_asset(output_dir, stt, 'videos')
+        asset_stt = shot.get('original_id') if shot.get('is_hook') else (idx + 1)
+        local_cand = find_local_asset(output_dir, asset_stt, 'videos')
         if local_cand and os.path.exists(local_cand):
             first_video_source = local_cand
             break
@@ -1168,14 +1246,15 @@ def compile_project(config_path, srt_path, output_dir):
         image_source = None
 
         # Try to resolve local assets according to flexible naming rules
+        asset_stt = shot.get('original_id') if shot.get('is_hook') else stt
         if export_mode == 'videos_only':
-            video_source = find_local_asset(output_dir, stt, 'videos')
+            video_source = find_local_asset(output_dir, asset_stt, 'videos')
         elif export_mode == 'images_only':
-            image_source = find_local_asset(output_dir, stt, 'images')
+            image_source = find_local_asset(output_dir, asset_stt, 'images')
         else: # mixed
-            video_source = find_local_asset(output_dir, stt, 'videos')
+            video_source = find_local_asset(output_dir, asset_stt, 'videos')
             if not video_source:
-                image_source = find_local_asset(output_dir, stt, 'images')
+                image_source = find_local_asset(output_dir, asset_stt, 'images')
 
         # Fallback to URLs if local not found
         if not video_source and not image_source:
@@ -1224,7 +1303,8 @@ def compile_project(config_path, srt_path, output_dir):
 
         # Placeholder fallback
         img = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-        cv2.putText(img, f"No Media: Shot {stt}", (target_width // 4, target_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        text_label = f"Hook: Shot {asset_stt}" if shot.get('is_hook') else f"No Media: Shot {stt}"
+        cv2.putText(img, text_label, (target_width // 4, target_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(temp_clip_path, fourcc, target_fps, (target_width, target_height))
@@ -1366,23 +1446,60 @@ def compile_project(config_path, srt_path, output_dir):
         voiceover_files = []
      
         if local_voice_files:
-            log(f"Found {len(local_voice_files)} voice files in voice/. Mapping to {len(unique_orig_ids)} unique original IDs.")
-            for i, orig_id in enumerate(unique_orig_ids):
-                if i >= len(local_voice_files):
-                    log(f"[Warning] More unique original IDs than voice files. Skipping orig_id {orig_id}.")
-                    break
+            log(f"Found {len(local_voice_files)} voice files in voice/. Mapping using intelligent ID search.")
+            
+            # Helper to find voice file for a given orig_id
+            def find_voice_file_for_id(orig_id):
+                for vf in local_voice_files:
+                    filename = os.path.basename(vf)
+                    digits = re.findall(r'\d+', filename)
+                    if digits and int(digits[0]) == orig_id:
+                        return vf
+                # Fallback to index-based if not found by name digits
+                try:
+                    idx = unique_orig_ids_original.index(orig_id)
+                    if idx < len(local_voice_files):
+                        return local_voice_files[idx]
+                except Exception:
+                    pass
+                return None
+
+            # Find unique original IDs from the main story (non-hook blocks)
+            story_blocks = [b for b in srt_blocks if not str(b['index']).startswith('hook_')]
+            unique_orig_ids_original = sorted(list(set(b['orig_id'] for b in story_blocks)))
+
+            # Map voiceover files
+            mapped_keys = set()
+            for block in srt_blocks:
+                orig_id = block.get('orig_id')
+                is_hook_block = str(block['index']).startswith('hook_')
                 
                 # Check if this original ID is hidden
                 if str(orig_id) in hidden_srt_indexes:
-                    log(f"Skipping voice file for hidden orig_id: {orig_id}")
                     continue
-                    
-                matching_blocks = [b for b in srt_blocks if b.get('orig_id') == orig_id]
-                if not matching_blocks:
+                
+                # We identify each occurrence (hook vs story) using a unique key
+                key = f"hook_{orig_id}" if is_hook_block else f"story_{orig_id}"
+                if key in mapped_keys:
                     continue
-                first_block = min(matching_blocks, key=lambda b: b['start'])
+                
+                # Find matching blocks for this occurrence
+                if is_hook_block:
+                    matching = [b for b in srt_blocks if str(b['index']).startswith('hook_') and b.get('orig_id') == orig_id]
+                else:
+                    matching = [b for b in srt_blocks if not str(b['index']).startswith('hook_') and b.get('orig_id') == orig_id]
+                
+                if not matching:
+                    continue
+                
+                first_block = min(matching, key=lambda b: b['start'])
                 start_time = first_block['start']
-                voiceover_files.append((local_voice_files[i], int(start_time * 1000)))
+                
+                voice_file = find_voice_file_for_id(orig_id)
+                if voice_file and os.path.exists(voice_file):
+                    voiceover_files.append((voice_file, int(start_time * 1000)))
+                    mapped_keys.add(key)
+                    log(f"Mapped voice file {os.path.basename(voice_file)} to {key} at start time {start_time:.2f}s")
         else:
             # Fallback to shot-based voice files if voice/ folder is empty
             log("[Warning] No voice files found in voice/ directory. Falling back to shot voice configurations.")
@@ -1429,7 +1546,8 @@ def compile_project(config_path, srt_path, output_dir):
             
             if is_hidden:
                 # Find original video source
-                video_source = find_local_asset(output_dir, idx + 1, 'videos')
+                asset_stt = shot.get('original_id') if shot.get('is_hook') else (idx + 1)
+                video_source = find_local_asset(output_dir, asset_stt, 'videos')
                 if not video_source:
                     video_url = shot.get('videoUrl')
                     if video_url:
@@ -1485,6 +1603,9 @@ def compile_project(config_path, srt_path, output_dir):
                 bgm_path = os.path.join(output_dir, "bgm", audio_file)
                 if os.path.exists(bgm_path):
                     start_sec, dur_sec = parse_bgm_time_range(sugg.get('timeRange', ''))
+                    
+                    # Shift BGM suggestions by hooks duration
+                    start_sec += hooks_dur
                     
                     # Shift BGM suggestions if intro is inserted
                     if intro_insert_idx is not None and intro_dur > 0:

@@ -99,6 +99,7 @@ export interface ProjectData {
   introSubIndex?: string;
   hiddenSrtIndexes?: string[];
   useAiDirector?: boolean;
+  hooks?: string[];
 }
 
 export interface PromptRule {

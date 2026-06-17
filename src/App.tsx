@@ -6,7 +6,7 @@ import {
   Settings, Eye, EyeOff, FileText, Terminal, Cpu, Plus, Trash2, Database,
   ZoomIn, Maximize2, StopCircle, PlayCircle, AlertOctagon, X,
   Sparkles, Globe, Copy, Check, Tags, Music, ChevronLeft, ChevronRight, Save,
-  Film, Clapperboard, Box, LogOut
+  Film, Clapperboard, Box, LogOut, ChevronDown
 } from "lucide-react";
 import { parseSRT, parseScript, mergeShortSRTAndScript, detectCharacters } from "./utils/parsers";
 import { SRTBlock, ScriptLine, ProjectData, PromptRule } from "./types";
@@ -29,6 +29,8 @@ import { BackgroundsTab } from "./components/BackgroundsTab";
 import { PropsTab } from "./components/PropsTab";
 import { ShotsTab } from "./components/ShotsTab";
 import { LoginScreen } from "./components/LoginScreen";
+import { useQueueStore, queueStore } from "./store/useQueueStore";
+import { QueuePanel } from "./components/QueuePanel";
 const ShotsTabAny = ShotsTab as any;
 
 
@@ -566,8 +568,9 @@ const STORE_NAME = "handles";
 const KEY_NAME = "directoryHandle";
 
 const saveDirectoryHandleToDB = async (handle: any) => {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(STORE_NAME);
@@ -577,6 +580,7 @@ const saveDirectoryHandleToDB = async (handle: any) => {
     });
 
     await new Promise<void>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
       const transaction = db.transaction(STORE_NAME, "readwrite");
       const store = transaction.objectStore(STORE_NAME);
       const req = store.put(handle, KEY_NAME);
@@ -586,12 +590,17 @@ const saveDirectoryHandleToDB = async (handle: any) => {
     console.log("Directory handle saved to IndexedDB successfully.");
   } catch (err) {
     console.error("Failed to save directory handle to IndexedDB:", err);
+  } finally {
+    if (db) {
+      db.close();
+    }
   }
 };
 
 const loadDirectoryHandleFromDB = async (): Promise<any | null> => {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(STORE_NAME);
@@ -601,6 +610,7 @@ const loadDirectoryHandleFromDB = async (): Promise<any | null> => {
     });
 
     const handle = await new Promise<any>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
       const transaction = db.transaction(STORE_NAME, "readonly");
       const store = transaction.objectStore(STORE_NAME);
       const req = store.get(KEY_NAME);
@@ -611,6 +621,10 @@ const loadDirectoryHandleFromDB = async (): Promise<any | null> => {
   } catch (err) {
     console.error("Failed to load directory handle from IndexedDB:", err);
     return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
   }
 };
 
@@ -620,9 +634,27 @@ const PROJECT_DB_NAME = "ProjectCacheDB";
 const PROJECT_STORE_NAME = "project_store";
 const PROJECT_KEY_NAME = "project_cache";
 
-const saveProjectCacheToDB = async (projectData: any) => {
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  projectPath: string;
+  srtText: string;
+  scriptText: string;
+  projectData: ProjectData;
+  apiKey?: string;
+  selectedModel?: string;
+  apiBaseUrl?: string;
+  exportVideoType?: 'mixed' | 'images_only' | 'videos_only';
+  subtitleStyle?: any;
+  burnSubtitles?: boolean;
+}
+
+const saveProjectToDB = async (project: ProjectInfo) => {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(PROJECT_DB_NAME, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(PROJECT_STORE_NAME);
@@ -632,6 +664,125 @@ const saveProjectCacheToDB = async (projectData: any) => {
     });
 
     await new Promise<void>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
+      const transaction = db.transaction(PROJECT_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(PROJECT_STORE_NAME);
+      const req = store.put(project, project.id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error("Failed to save project to IndexedDB:", err);
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+};
+
+const loadProjectFromDB = async (id: string): Promise<ProjectInfo | null> => {
+  let db: IDBDatabase | null = null;
+  try {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(PROJECT_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(PROJECT_STORE_NAME);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    return await new Promise<ProjectInfo | null>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
+      const transaction = db.transaction(PROJECT_STORE_NAME, "readonly");
+      const store = transaction.objectStore(PROJECT_STORE_NAME);
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error("Failed to load project from IndexedDB:", err);
+    return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+};
+
+const loadAllProjectsFromDB = async (): Promise<ProjectInfo[]> => {
+  let db: IDBDatabase | null = null;
+  try {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(PROJECT_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(PROJECT_STORE_NAME);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    return await new Promise<ProjectInfo[]>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
+      const transaction = db.transaction(PROJECT_STORE_NAME, "readonly");
+      const store = transaction.objectStore(PROJECT_STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error("Failed to load all projects from IndexedDB:", err);
+    return [];
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+};
+
+const removeProjectFromDB = async (id: string) => {
+  let db: IDBDatabase | null = null;
+  try {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(PROJECT_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(PROJECT_STORE_NAME);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
+      const transaction = db.transaction(PROJECT_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(PROJECT_STORE_NAME);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error("Failed to remove project from IndexedDB:", err);
+  } finally {
+    if (db) {
+      db.close();
+    }
+  }
+};
+
+const saveProjectCacheToDB = async (projectData: any) => {
+  let db: IDBDatabase | null = null;
+  try {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(PROJECT_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(PROJECT_STORE_NAME);
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
       const transaction = db.transaction(PROJECT_STORE_NAME, "readwrite");
       const store = transaction.objectStore(PROJECT_STORE_NAME);
       const req = store.put(projectData, PROJECT_KEY_NAME);
@@ -641,12 +792,17 @@ const saveProjectCacheToDB = async (projectData: any) => {
     console.log("Project cache saved to IndexedDB successfully.");
   } catch (err) {
     console.error("Failed to save project cache to IndexedDB:", err);
+  } finally {
+    if (db) {
+      db.close();
+    }
   }
 };
 
 const loadProjectCacheFromDB = async (): Promise<any | null> => {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(PROJECT_DB_NAME, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(PROJECT_STORE_NAME);
@@ -656,6 +812,7 @@ const loadProjectCacheFromDB = async (): Promise<any | null> => {
     });
 
     const projectData = await new Promise<any>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
       const transaction = db.transaction(PROJECT_STORE_NAME, "readonly");
       const store = transaction.objectStore(PROJECT_STORE_NAME);
       const req = store.get(PROJECT_KEY_NAME);
@@ -666,12 +823,17 @@ const loadProjectCacheFromDB = async (): Promise<any | null> => {
   } catch (err) {
     console.error("Failed to load project cache from IndexedDB:", err);
     return null;
+  } finally {
+    if (db) {
+      db.close();
+    }
   }
 };
 
 const removeProjectCacheFromDB = async () => {
+  let db: IDBDatabase | null = null;
   try {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(PROJECT_DB_NAME, 1);
       request.onupgradeneeded = () => {
         request.result.createObjectStore(PROJECT_STORE_NAME);
@@ -681,6 +843,7 @@ const removeProjectCacheFromDB = async () => {
     });
 
     await new Promise<void>((resolve, reject) => {
+      if (!db) return reject(new Error("DB not initialized"));
       const transaction = db.transaction(PROJECT_STORE_NAME, "readwrite");
       const store = transaction.objectStore(PROJECT_STORE_NAME);
       const req = store.delete(PROJECT_KEY_NAME);
@@ -690,9 +853,29 @@ const removeProjectCacheFromDB = async () => {
     console.log("Project cache removed from IndexedDB.");
   } catch (err) {
     console.error("Failed to remove project cache from IndexedDB:", err);
+  } finally {
+    if (db) {
+      db.close();
+    }
   }
 };
 
+
+const DEFAULT_SUBTITLE_STYLE = {
+  fontFamily: "sans-serif",
+  fontSize: 24,
+  textColor: "#ffffff",
+  outlineColor: "#000000",
+  outlineWidth: 2,
+  verticalAlign: "bottom",
+  bgOpacity: 0.4,
+  maxLineLength: 38,
+  maxWordsLimit: 7,
+  bgFullWidth: false,
+  bgHeight: 80,
+  bottomMargin: 24,
+  bgColor: "#000000"
+};
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem("login_session_active") === "true");
@@ -710,6 +893,28 @@ export default function App() {
     const saved = localStorage.getItem("ai_max_duration");
     return saved ? parseInt(saved, 10) : 10;
   });
+
+  const [exportVideoType, setExportVideoType] = useState<"mixed" | "images_only" | "videos_only">("mixed");
+  const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
+  const [subtitleStyle, setSubtitleStyle] = useState<any>(() => {
+    const saved = localStorage.getItem("ai_subtitle_style");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed.maxWordsLimit === undefined) parsed.maxWordsLimit = 7;
+        if (parsed.bgFullWidth === undefined) parsed.bgFullWidth = false;
+        if (parsed.bgHeight === undefined) parsed.bgHeight = 80;
+        if (parsed.bottomMargin === undefined) parsed.bottomMargin = 24;
+        if (parsed.bgColor === undefined) parsed.bgColor = "#000000";
+        return parsed;
+      } catch (e) {}
+    }
+    return DEFAULT_SUBTITLE_STYLE;
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem("ai_subtitle_style", JSON.stringify(subtitleStyle));
+  }, [subtitleStyle]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRefMappingApproved, setIsRefMappingApproved] = useState(() => {
     return localStorage.getItem("ai_ref_mapping_approved") === "true";
@@ -743,54 +948,276 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Load project cache from IndexedDB asynchronously on mount
-  React.useEffect(() => {
-    const loadCache = async () => {
-      try {
-        const dbCache = await loadProjectCacheFromDB();
-        let currentProject = dbCache;
-        
-        if (!currentProject) {
-          // Fallback to localStorage migration
-          const lsCache = localStorage.getItem("ai_project_cache");
-          if (lsCache) {
-            currentProject = JSON.parse(lsCache);
+  // Multi-project States
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const isSwitchingRef = React.useRef(false);
+
+  // Custom Prompt Dialog State
+  const [promptModal, setPromptModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    defaultValue: string;
+    onConfirm: (value: string) => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    defaultValue: "",
+    onConfirm: () => {}
+  });
+  const [promptInputValue, setPromptInputValue] = useState("");
+
+  const showPrompt = (title: string, message: string, defaultValue: string, onConfirm: (value: string) => void) => {
+    setPromptInputValue(defaultValue);
+    setPromptModal({
+      isOpen: true,
+      title,
+      message,
+      defaultValue,
+      onConfirm
+    });
+  };
+
+  // Custom Confirm Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {}
+  });
+
+  const showConfirm = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      message,
+      onConfirm
+    });
+  };
+
+  // Prompt Generation Progress per Project
+  const [projectPromptProgress, setProjectPromptProgress] = useState<Record<string, {
+    isAnalyzing: boolean;
+    isWritingShots: boolean;
+    percent: number;
+    currentShot: number;
+    totalShots: number;
+    step: string;
+  }>>({});
+
+  const updateProjectPromptProgress = (projectId: string, update: Partial<{
+    isAnalyzing: boolean;
+    isWritingShots: boolean;
+    percent: number;
+    currentShot: number;
+    totalShots: number;
+    step: string;
+  }>) => {
+    setProjectPromptProgress(prev => {
+      const current = prev[projectId] || { isAnalyzing: false, isWritingShots: false, percent: 0, currentShot: 0, totalShots: 0, step: "" };
+      return {
+        ...prev,
+        [projectId]: { ...current, ...update }
+      };
+    });
+  };
+
+  const updateProjectDataById = (targetProjId: string, updater: (prev: ProjectData) => ProjectData) => {
+    setProjects(prevList => {
+      const targetProj = prevList.find(p => p.id === targetProjId);
+      if (!targetProj) return prevList;
+
+      const updatedData = updater(targetProj.projectData);
+      const updatedProj = {
+        ...targetProj,
+        projectData: updatedData,
+        updatedAt: new Date().toISOString()
+      };
+
+      saveProjectToDB(updatedProj);
+
+      // If this project is currently active, update the active project state
+      setTimeout(() => {
+        setActiveProjectId(currActiveId => {
+          if (currActiveId === targetProjId) {
+            setProject(updatedData);
           }
-        }
-        
-        // If still no project, try to load from the last compile files in Electron
-        if (!currentProject && (window as any).electronAPI && (window as any).electronAPI.getLastCompileData) {
-          console.log("No project in cache, attempting to restore from last compile data...");
-          const lastData = await (window as any).electronAPI.getLastCompileData();
-          if (lastData && lastData.project) {
-            currentProject = lastData.project;
-            if (lastData.srtText) {
-              setSrtText(lastData.srtText);
-              localStorage.setItem("ai_srt_text", lastData.srtText);
-            }
-            console.log("Restored project from last compile data successfully.");
-          }
-        }
-        
-        if (currentProject) {
-          // Guarantee all shots have a unique stable ID in state
-          const sanitized = {
-            ...currentProject,
-            props: currentProject.props || [],
-            shots: (currentProject.shots || []).map((s: any, idx: number) => ({
-              ...s,
-              id: s.id !== undefined ? s.id : idx + 1
-            }))
-          };
-          setProject(sanitized);
-          await saveProjectCacheToDB(sanitized);
-        }
-      } catch (err) {
-        console.error("Error loading project cache on mount:", err);
-      }
+          return currActiveId;
+        });
+      }, 0);
+
+      return prevList.map(p => p.id === targetProjId ? updatedProj : p);
+    });
+  };
+
+  // Switch between projects
+  const switchProject = async (id: string, projectsList?: ProjectInfo[]) => {
+    const listToSearch = projectsList || projects;
+    const target = listToSearch.find(p => p.id === id);
+    if (!target) return;
+
+    // Abort active batch processes
+    abortBatchRef.current = true;
+    setIsBatchRendering(false);
+    setIsBatchGenerating(false);
+
+    setError(null);
+    isSwitchingRef.current = true;
+    setActiveProjectId(id);
+    localStorage.setItem("ai_active_project_id", id);
+
+    setProject(target.projectData);
+    setSrtText(target.srtText);
+    setSrtData(parseSRT(target.srtText));
+    setScriptText(target.scriptText);
+    setScriptData(parseScript(target.scriptText));
+    setFolderPathInput(target.projectPath);
+    setApiKey(target.apiKey || "");
+    setSelectedModel(target.selectedModel || "gemini-2.5-flash");
+    setApiBaseUrl(target.apiBaseUrl || "http://127.0.0.1:5000");
+    setExportVideoType(target.exportVideoType || "mixed");
+    setSubtitleStyle(target.subtitleStyle || DEFAULT_SUBTITLE_STYLE);
+    setBurnSubtitles(target.burnSubtitles !== false);
+
+    // Reset selection lists
+    setSelectedCharacters({});
+    setSelectedBackgrounds({});
+    setSelectedProps({});
+    setSelectedShots({});
+
+    setTimeout(() => {
+      isSwitchingRef.current = false;
+    }, 100);
+  };
+
+  // Create new project
+  const handleCreateProject = (name?: string) => {
+    if (name) {
+      executeCreateProject(name);
+    } else {
+      showPrompt("Tạo Dự Án Mới", "Nhập tên cho dự án mới:", "", (projName) => {
+        executeCreateProject(projName);
+      });
+    }
+  };
+
+  const executeCreateProject = async (projName: string) => {
+    if (!projName.trim()) return;
+
+    const newProjId = "project_" + Date.now();
+    const newProj: ProjectInfo = {
+      id: newProjId,
+      name: projName.trim(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      projectPath: "",
+      srtText: "",
+      scriptText: "",
+      projectData: {
+        characters: [],
+        backgrounds: [],
+        props: [],
+        situations: [],
+        shots: []
+      },
+      apiKey: apiKey,
+      selectedModel: selectedModel,
+      apiBaseUrl: apiBaseUrl,
+      exportVideoType: "mixed",
+      burnSubtitles: burnSubtitles,
+      subtitleStyle: subtitleStyle || DEFAULT_SUBTITLE_STYLE
     };
-    loadCache();
-  }, []);
+
+    const updatedProjects = [...projects, newProj];
+    setProjects(updatedProjects);
+    await saveProjectToDB(newProj);
+    await switchProject(newProjId, updatedProjects);
+  };
+
+  React.useEffect(() => {
+    if (typeof window !== "undefined") {
+      (window as any).executeCreateProjectDirect = executeCreateProject;
+    }
+  }, [projects]);
+
+  // Clone project
+  const handleCloneProject = (id: string) => {
+    const source = projects.find(p => p.id === id);
+    if (!source) return;
+
+    showPrompt("Nhân Bản Dự Án", "Nhập tên cho dự án nhân bản:", `${source.name} (Copy)`, async (cloneName) => {
+      if (!cloneName.trim()) return;
+
+      const newProjId = "project_" + Date.now();
+      const clonedProj: ProjectInfo = {
+        ...source,
+        id: newProjId,
+        name: cloneName.trim(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        projectData: JSON.parse(JSON.stringify(source.projectData))
+      };
+
+      const updatedProjects = [...projects, clonedProj];
+      setProjects(updatedProjects);
+      await saveProjectToDB(clonedProj);
+      alert(`Đã nhân bản dự án thành công thành "${cloneName}"!`);
+    });
+  };
+
+  // Delete project
+  const handleDeleteProject = (id: string) => {
+    if (projects.length <= 1) {
+      alert("Bạn phải giữ lại ít nhất một dự án!");
+      return;
+    }
+
+    const target = projects.find(p => p.id === id);
+    if (!target) return;
+
+    showConfirm(
+      "Xóa Dự Án",
+      `Bạn có chắc chắn muốn xóa dự án "${target.name}"? Hành động này không thể hoàn tác.`,
+      async () => {
+        await removeProjectFromDB(id);
+        const updatedProjects = projects.filter(p => p.id !== id);
+        setProjects(updatedProjects);
+
+        if (activeProjectId === id) {
+          await switchProject(updatedProjects[0].id, updatedProjects);
+        }
+        alert(`Đã xóa dự án "${target.name}".`);
+      }
+    );
+  };
+
+  // Rename project
+  const handleRenameProject = (id: string) => {
+    const target = projects.find(p => p.id === id);
+    if (!target) return;
+
+    showPrompt("Đổi Tên Dự Án", "Nhập tên mới cho dự án:", target.name, async (newName) => {
+      if (!newName.trim()) return;
+
+      const updated = {
+        ...target,
+        name: newName.trim(),
+        updatedAt: new Date().toISOString()
+      };
+
+      setProjects(prev => prev.map(p => p.id === id ? updated : p));
+      await saveProjectToDB(updated);
+    });
+  };
+
+
   const [logsError, setLogsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'reference_images' | 'characters' | 'backgrounds' | 'props' | 'shots' | 'logs' | 'thumb' | 'seo' | 'cinema'>(() => {
     const saved = localStorage.getItem("ai_active_tab");
@@ -975,7 +1402,7 @@ export default function App() {
   };
 
 
-  const isImageGenerating = Object.values(generatingImages).some(Boolean);
+  // activeGeneratingImages, activeGeneratingVideos, activeGenerationStatuses, activeGenerationErrors, and isImageGenerating are defined below generationErrors definition
 
   // Zoom & Batch Controls States
   const [zoomedImageUrl, setZoomedImageUrl] = useState<string | null>(null);
@@ -1221,6 +1648,17 @@ export default function App() {
 
   const [project, setProject] = useState<ProjectData | null>(null);
 
+  const projectRef = React.useRef<ProjectData | null>(null);
+  const projectsRef = React.useRef<ProjectInfo[]>([]);
+
+  React.useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
+
+  React.useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
   // Reference Image Management States
   const [imageSelectorTarget, setImageSelectorTarget] = useState<{ type: 'character' | 'background' | 'shot' | 'prop'; index: number; refIndex?: number; isMain?: boolean } | null>(null);
   const [fileUploadTarget, setFileUploadTarget] = useState<{ type: 'character' | 'background' | 'shot' | 'prop'; index: number; refIndex?: number } | null>(null);
@@ -1230,6 +1668,57 @@ export default function App() {
   // Active Generation Status and Error Tracking
   const [generationStatuses, setGenerationStatuses] = useState<Record<string, string>>({});
   const [generationErrors, setGenerationErrors] = useState<Record<string, string>>({});
+
+  const activeGeneratingImages = React.useMemo(() => {
+    const result: Record<string, boolean> = {};
+    if (!activeProjectId) return result;
+    const prefix = `${activeProjectId}_`;
+    for (const [key, val] of Object.entries(generatingImages)) {
+      if (key.startsWith(prefix)) {
+        result[key.slice(prefix.length)] = val;
+      }
+    }
+    return result;
+  }, [generatingImages, activeProjectId]);
+
+  const activeGeneratingVideos = React.useMemo(() => {
+    const result: Record<number, boolean> = {};
+    if (!activeProjectId) return result;
+    const prefix = `${activeProjectId}_`;
+    for (const [key, val] of Object.entries(generatingVideos)) {
+      if (key.startsWith(prefix)) {
+        const indexStr = key.slice(prefix.length);
+        result[Number(indexStr)] = val;
+      }
+    }
+    return result;
+  }, [generatingVideos, activeProjectId]);
+
+  const activeGenerationStatuses = React.useMemo(() => {
+    const result: Record<string, string> = {};
+    if (!activeProjectId) return result;
+    const prefix = `${activeProjectId}_`;
+    for (const [key, val] of Object.entries(generationStatuses)) {
+      if (key.startsWith(prefix)) {
+        result[key.slice(prefix.length)] = val;
+      }
+    }
+    return result;
+  }, [generationStatuses, activeProjectId]);
+
+  const activeGenerationErrors = React.useMemo(() => {
+    const result: Record<string, string> = {};
+    if (!activeProjectId) return result;
+    const prefix = `${activeProjectId}_`;
+    for (const [key, val] of Object.entries(generationErrors)) {
+      if (key.startsWith(prefix)) {
+        result[key.slice(prefix.length)] = val;
+      }
+    }
+    return result;
+  }, [generationErrors, activeProjectId]);
+
+  const isImageGenerating = Object.values(activeGeneratingImages).some(Boolean);
 
   const filteredSelectorImages = React.useMemo(() => {
     if (!project) return [];
@@ -1296,9 +1785,9 @@ export default function App() {
     if (!project) return [];
     return project.shots.map((shot, index) => ({ shot, index })).filter(({ shot, index }) => {
       const statusKey = `video_${index}`;
-      const isGenerating = generatingVideos[index];
+      const isGenerating = activeGeneratingVideos[index];
       const hasSuccess = !!shot.videoUrl;
-      const hasError = !!(shot.videoError || generationErrors[statusKey]) && !hasSuccess && !isGenerating;
+      const hasError = !!(shot.videoError || activeGenerationErrors[statusKey]) && !hasSuccess && !isGenerating;
       const isUnrendered = !hasSuccess;
       
       if (videoStatusFilter === 'success') return hasSuccess;
@@ -1307,7 +1796,7 @@ export default function App() {
       if (videoStatusFilter === 'unrendered') return isUnrendered;
       return true; // 'all'
     });
-  }, [project, videoStatusFilter, generatingVideos, generationErrors]);
+  }, [project, videoStatusFilter, activeGeneratingVideos, activeGenerationErrors]);
 
 
   const selectedCharsCount = Object.keys(selectedCharacters).filter(k => selectedCharacters[Number(k)]).length;
@@ -1351,6 +1840,12 @@ export default function App() {
     const saved = localStorage.getItem("ai_video_concurrency_limit");
     return saved ? Math.max(1, parseInt(saved, 10)) : 1;
   });
+
+  // Sync limits to queueStore
+  React.useEffect(() => {
+    queueStore.updateLimits(concurrencyLimit, videoConcurrencyLimit);
+  }, [concurrencyLimit, videoConcurrencyLimit]);
+
   const [maxAttempts, setMaxAttempts] = useState<number>(() => {
     const saved = localStorage.getItem("ai_max_attempts");
     return saved ? Math.max(1, parseInt(saved, 10)) : 3;
@@ -1409,6 +1904,163 @@ export default function App() {
     } catch (e) {}
     return url;
   };
+
+  // Auto-sync active editor states back to projects list and DB
+  React.useEffect(() => {
+    if (!activeProjectId || projects.length === 0 || isSwitchingRef.current || !project) return;
+
+    const activeProj = projects.find(p => p.id === activeProjectId);
+    if (!activeProj) return;
+
+    const hasChanged =
+      activeProj.projectData !== project ||
+      activeProj.srtText !== srtText ||
+      activeProj.scriptText !== scriptText ||
+      activeProj.projectPath !== folderPathInput ||
+      activeProj.apiKey !== apiKey ||
+      activeProj.selectedModel !== selectedModel ||
+      activeProj.apiBaseUrl !== apiBaseUrl ||
+      activeProj.exportVideoType !== exportVideoType ||
+      activeProj.subtitleStyle !== subtitleStyle ||
+      activeProj.burnSubtitles !== burnSubtitles;
+
+    if (hasChanged) {
+      const updatedProj: ProjectInfo = {
+        ...activeProj,
+        projectData: project || activeProj.projectData,
+        srtText: srtText,
+        scriptText: scriptText,
+        projectPath: folderPathInput,
+        apiKey: apiKey,
+        selectedModel: selectedModel,
+        apiBaseUrl: apiBaseUrl,
+        exportVideoType: exportVideoType,
+        subtitleStyle: subtitleStyle,
+        burnSubtitles: burnSubtitles,
+        updatedAt: new Date().toISOString()
+      };
+
+      setProjects(prev => prev.map(p => p.id === activeProjectId ? updatedProj : p));
+      saveProjectToDB(updatedProj);
+    }
+  }, [
+    project,
+    srtText,
+    scriptText,
+    folderPathInput,
+    apiKey,
+    selectedModel,
+    apiBaseUrl,
+    exportVideoType,
+    subtitleStyle,
+    burnSubtitles,
+    activeProjectId,
+    projects
+  ]);
+
+  // Load projects list on mount and handle legacy migrations
+  React.useEffect(() => {
+    const loadProjects = async () => {
+      try {
+        let allProjects = await loadAllProjectsFromDB();
+
+        // MIGRATION: Check for legacy project cache
+        const legacyProj = await loadProjectCacheFromDB();
+        if (legacyProj && allProjects.length === 0) {
+          const defaultProj: ProjectInfo = {
+            id: "project_default",
+            name: "Dự án mặc định",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            projectPath: localStorage.getItem("ai_image_folder_path") || "",
+            srtText: localStorage.getItem("ai_srt_text") || "",
+            scriptText: localStorage.getItem("ai_script_text") || "",
+            projectData: {
+              ...legacyProj,
+              props: legacyProj.props || [],
+              shots: (legacyProj.shots || []).map((s: any, idx: number) => ({
+                ...s,
+                id: s.id !== undefined ? s.id : idx + 1
+              }))
+            },
+            apiKey: localStorage.getItem("ai_api_key") || "",
+            selectedModel: localStorage.getItem("ai_selected_model") || "gemini-2.5-flash",
+            apiBaseUrl: localStorage.getItem("ai_api_base_url") || "http://127.0.0.1:5000",
+            exportVideoType: (localStorage.getItem("ai_export_video_type") as any) || "mixed",
+            subtitleStyle: localStorage.getItem("ai_styles_config") ? JSON.parse(localStorage.getItem("ai_styles_config")!)[0] : DEFAULT_SUBTITLE_STYLE,
+            burnSubtitles: localStorage.getItem("ai_burn_subtitles") !== "false"
+          };
+
+          await saveProjectToDB(defaultProj);
+          allProjects = [defaultProj];
+
+          // Clear legacy cache to avoid repeated migrations
+          await removeProjectCacheFromDB();
+        }
+
+        // Create default project if none exist
+        if (allProjects.length === 0) {
+          const defaultProj: ProjectInfo = {
+            id: "project_default",
+            name: "Dự án mặc định",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            projectPath: "",
+            srtText: "",
+            scriptText: "",
+            projectData: {
+              characters: [],
+              backgrounds: [],
+              props: [],
+              situations: [],
+              shots: []
+            },
+            apiKey: "",
+            selectedModel: "gemini-2.5-flash",
+            apiBaseUrl: "http://127.0.0.1:5000",
+            exportVideoType: "mixed",
+            burnSubtitles: true,
+            subtitleStyle: DEFAULT_SUBTITLE_STYLE
+          };
+          await saveProjectToDB(defaultProj);
+          allProjects = [defaultProj];
+        }
+
+        setProjects(allProjects);
+
+        const lastActiveId = localStorage.getItem("ai_active_project_id") || allProjects[0].id;
+        const exists = allProjects.some(p => p.id === lastActiveId);
+        const targetId = exists ? lastActiveId : allProjects[0].id;
+
+        // Switch to the project on mount
+        isSwitchingRef.current = true;
+        setActiveProjectId(targetId);
+        localStorage.setItem("ai_active_project_id", targetId);
+
+        const targetProj = allProjects.find(p => p.id === targetId) || allProjects[0];
+        setProject(targetProj.projectData);
+        setSrtText(targetProj.srtText);
+        setSrtData(parseSRT(targetProj.srtText));
+        setScriptText(targetProj.scriptText);
+        setScriptData(parseScript(targetProj.scriptText));
+        setFolderPathInput(targetProj.projectPath);
+        setApiKey(targetProj.apiKey || "");
+        setSelectedModel(targetProj.selectedModel || "gemini-2.5-flash");
+        setApiBaseUrl(targetProj.apiBaseUrl || "http://127.0.0.1:5000");
+        setExportVideoType(targetProj.exportVideoType || "mixed");
+        setSubtitleStyle(targetProj.subtitleStyle || DEFAULT_SUBTITLE_STYLE);
+        setBurnSubtitles(targetProj.burnSubtitles !== false);
+
+        setTimeout(() => {
+          isSwitchingRef.current = false;
+        }, 100);
+
+      } catch (err) {
+        console.error("Error loading project list on mount:", err);
+      }
+    };
+    loadProjects();
+  }, []);
 
   // Auto-migrate old absolute non-routable URLs (e.g., 0.0.0.0 / 127.0.0.1) in project state to current cleanApiUrl
   React.useEffect(() => {
@@ -1770,21 +2422,25 @@ export default function App() {
   const isReady = srtData.length > 0 && scriptData.length > 0 && !validationError;
 
   const extractAssetsAndSituations = async () => {
-    setIsGenerating(true);
-    setIsGeneratingSituations(true);
+    const projId = activeProjectId || "default";
+    if (projectPromptProgress[projId]?.isAnalyzing) return;
+
+    updateProjectPromptProgress(projId, {
+      isAnalyzing: true,
+      percent: 5,
+      step: "Initializing AI Production Engine..."
+    });
     setError(null);
-    setProgress({ step: "Initializing AI Production Engine...", percent: 5 });
 
     if (!apiKey) {
       setError("Please enter an API Key in the settings.");
-      setIsGenerating(false);
-      setIsGeneratingSituations(false);
+      updateProjectPromptProgress(projId, { isAnalyzing: false });
       return;
     }
 
     try {
       // PHASE 1: COMPACT DATA & EXTRACT GLOBAL ASSETS & SITUATIONS
-      setProgress({ step: "Phase 1: Compacting & Extracting Global Assets & Situations...", percent: 10 });
+      updateProjectPromptProgress(projId, { step: "Phase 1: Compacting & Extracting Global Assets & Situations...", percent: 10 });
 
       let finalSrt = srtData;
       let finalScript = scriptData;
@@ -1810,69 +2466,87 @@ export default function App() {
 
       let assetsJson = "";
       let tokenUsage = { prompt: 0, completion: 0, total: 0 };
-      if (selectedModel.startsWith("gemini")) {
-        const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-        const res = await ai.models.generateContent({
-          model: selectedModel,
-          contents: [{ role: "user", parts: [{ text: `${assetPrompt}\n\n📊 OUTPUT FORMAT (STRICT JSON - ESCAPE ALL DOUBLE QUOTES INSIDE STRINGS WITH \\")\n{\n  "characters": [{ "name": "Name", "appearance": "...", "prompt": "..." }],\n  "backgrounds": [{ "location": "Location_Name_1", "angle": "Angle Description", "prompt": "..." }],\n  "props": [{ "name": "PropName", "appearance": "...", "prompt": "..." }],\n  "situations": [{ "id": 1, "timeRange": "00:00 - 01:15", "location": "Location", "summary": "Summary", "characterNames": "A, B", "backgroundNames": "BG1" }]\n}` }] }],
-          config: { 
-            responseMimeType: "application/json",
-            safetySettings: [
-              { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-            ]
-          }
-        });
-        assetsJson = getResponseText(res);
-        if (!assetsJson) {
-          let reason = "Không có phản hồi hoặc bị chặn bởi bộ lọc an toàn.";
-          if (res.candidates?.[0]?.finishReason) {
-            reason = `Lý do dừng: ${res.candidates[0].finishReason}`;
-          } else if (res.promptFeedback?.blockReason) {
-            reason = `Bị chặn bởi bộ lọc: ${res.promptFeedback.blockReason}`;
-          }
-          throw new Error(`Không nhận được phản hồi văn bản từ AI. Vui lòng kiểm tra lại API Key hoặc mẫu AI bạn đã chọn. (${reason})`);
-        }
-        if (res.usageMetadata) {
-          tokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
-          tokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
-          tokenUsage.total = res.usageMetadata.totalTokenCount || 0;
-        }
-      } else {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: [{ role: "user", content: assetPrompt }],
-            response_format: { type: "json_object" }
-          })
-        });
-        
-        if (!res.ok) {
-          let errorMsg = `API Error: ${res.status} ${res.statusText}`;
-          try {
-            const errData = await res.json();
-            if (errData?.error?.message) {
-              errorMsg = errData.error.message;
+      const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
+
+      await new Promise<void>((resolve, reject) => {
+        queueStore.enqueue({
+          id: "init_prod_" + Date.now(),
+          projectId: activeProjectId || "default",
+          projectName: currentProjName,
+          type: "text",
+          label: "Phân tích Kịch bản & Nhân vật",
+          run: async () => {
+            try {
+              if (selectedModel.startsWith("gemini")) {
+                const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+                const res = await ai.models.generateContent({
+                  model: selectedModel,
+                  contents: [{ role: "user", parts: [{ text: `${assetPrompt}\n\n📊 OUTPUT FORMAT (STRICT JSON - ESCAPE ALL DOUBLE QUOTES INSIDE STRINGS WITH \\")\n{\n  "characters": [{ "name": "Name", "appearance": "...", "prompt": "..." }],\n  "backgrounds": [{ "location": "Location_Name_1", "angle": "Angle Description", "prompt": "..." }],\n  "props": [{ "name": "PropName", "appearance": "...", "prompt": "..." }],\n  "situations": [{ "id": 1, "timeRange": "00:00 - 01:15", "location": "Location", "summary": "Summary", "characterNames": "A, B", "backgroundNames": "BG1" }]\n}` }] }],
+                  config: { 
+                    responseMimeType: "application/json",
+                    safetySettings: [
+                      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+                    ]
+                  }
+                });
+                assetsJson = getResponseText(res);
+                if (!assetsJson) {
+                  let reason = "Không có phản hồi hoặc bị chặn bởi bộ lọc an toàn.";
+                  if (res.candidates?.[0]?.finishReason) {
+                    reason = `Lý do dừng: ${res.candidates[0].finishReason}`;
+                  } else if (res.promptFeedback?.blockReason) {
+                    reason = `Bị chặn bởi bộ lọc: ${res.promptFeedback.blockReason}`;
+                  }
+                  throw new Error(`Không nhận được phản hồi văn bản từ AI. Vui lòng kiểm tra lại API Key hoặc mẫu AI bạn đã chọn. (${reason})`);
+                }
+                if (res.usageMetadata) {
+                  tokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
+                  tokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
+                  tokenUsage.total = res.usageMetadata.totalTokenCount || 0;
+                }
+              } else {
+                const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: [{ role: "user", content: assetPrompt }],
+                    response_format: { type: "json_object" }
+                  })
+                });
+                
+                if (!res.ok) {
+                  let errorMsg = `API Error: ${res.status} ${res.statusText}`;
+                  try {
+                    const errData = await res.json();
+                    if (errData?.error?.message) {
+                      errorMsg = errData.error.message;
+                    }
+                  } catch (e) {}
+                  throw new Error(errorMsg);
+                }
+                
+                const data = await res.json();
+                if (!data.choices || data.choices.length === 0) {
+                  throw new Error("Không nhận được dữ liệu phản hồi (choices) từ OpenAI API.");
+                }
+                assetsJson = data.choices[0].message?.content;
+                if (data.usage) {
+                  tokenUsage.prompt = data.usage.prompt_tokens || 0;
+                  tokenUsage.completion = data.usage.completion_tokens || 0;
+                  tokenUsage.total = data.usage.total_tokens || 0;
+                }
+              }
+              resolve();
+            } catch (err) {
+              reject(err);
             }
-          } catch (e) {}
-          throw new Error(errorMsg);
-        }
-        
-        const data = await res.json();
-        if (!data.choices || data.choices.length === 0) {
-          throw new Error("Không nhận được dữ liệu phản hồi (choices) từ OpenAI API.");
-        }
-        assetsJson = data.choices[0].message?.content;
-        if (data.usage) {
-          tokenUsage.prompt = data.usage.prompt_tokens || 0;
-          tokenUsage.completion = data.usage.completion_tokens || 0;
-          tokenUsage.total = data.usage.total_tokens || 0;
-        }
-      }
+          }
+        });
+      });
 
       // assetsJson check is handled immediately above for Gemini and below for OpenAI
       if (!assetsJson) {
@@ -2050,34 +2724,57 @@ export default function App() {
         ]);
       }
 
-      setProgress({ step: "Asset & Situation Extraction Complete!", percent: 100 });
+      updateProjectPromptProgress(projId, { step: "Asset & Situation Extraction Complete!", percent: 100 });
       await new Promise(r => setTimeout(r, 500));
       
-      setProject(finalProject);
-      saveProjectCacheToDB(finalProject);
+      if (projId === activeProjectId) {
+        setProject(finalProject);
+        saveProjectCacheToDB(finalProject);
 
-      setIsRefMappingApproved(false);
-      localStorage.setItem("ai_ref_mapping_approved", "false");
+        setIsRefMappingApproved(false);
+        localStorage.setItem("ai_ref_mapping_approved", "false");
 
-      setActiveTab('shots');
-      localStorage.setItem("ai_active_tab", "shots");
+        setActiveTab('shots');
+        localStorage.setItem("ai_active_tab", "shots");
+      } else {
+        // Update background project in projects list and DB
+        setProjects(prev => prev.map(p => {
+          if (p.id === projId) {
+            const updatedProj: ProjectInfo = {
+              ...p,
+              projectData: finalProject,
+              updatedAt: new Date().toISOString()
+            };
+            saveProjectToDB(updatedProj);
+            return updatedProj;
+          }
+          return p;
+        }));
+      }
 
     } catch (err: any) {
       console.error("AI asset extraction error:", err);
       setError(err.message);
     } finally {
-      setIsGenerating(false);
-      setIsGeneratingSituations(false);
-      setProgress({ step: "", percent: 0, currentShot: 0, totalShots: 0 });
+      updateProjectPromptProgress(projId, {
+        isAnalyzing: false,
+        percent: 0,
+        step: ""
+      });
     }
   };
 
   const generateCinematicShots = async () => {
     if (!project) return;
-    setIsGenerating(true);
-    setIsWritingShots(true);
+    const projId = activeProjectId || "default";
+    updateProjectPromptProgress(projId, {
+      isWritingShots: true,
+      percent: 5,
+      currentShot: 0,
+      totalShots: srtData.length,
+      step: "Initializing cinematic shot direction..."
+    });
     setError(null);
-    setProgress({ step: "Initializing cinematic shot direction...", percent: 5 });
 
     const activeKeys = apiMode === 'parallel' 
       ? apiKeysList.split(/[\n,]+/).map(k => k.trim()).filter(Boolean)
@@ -2085,8 +2782,7 @@ export default function App() {
 
     if (activeKeys.length === 0) {
       setError(apiMode === 'parallel' ? "Vui lòng nhập ít nhất một API Key trong phần cấu hình song song." : "Vui lòng nhập API Key trong phần cấu hình.");
-      setIsGenerating(false);
-      setIsWritingShots(false);
+      updateProjectPromptProgress(projId, { isWritingShots: false });
       return;
     }
 
@@ -2135,69 +2831,87 @@ export default function App() {
 
         let chunkResText = "";
         let chunkTokenUsage = { prompt: 0, completion: 0, total: 0 };
-        if (selectedModel.startsWith("gemini")) {
-          const ai = new GoogleGenAI({ apiKey: keyToUse.trim() });
-          const res = await ai.models.generateContent({
-            model: selectedModel,
-            contents: [{ role: "user", parts: [{ text: shotPrompt }] }],
-            config: { 
-              responseMimeType: "application/json",
-              safetySettings: [
-                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-              ]
-            }
-          });
-          chunkResText = getResponseText(res);
-          if (!chunkResText) {
-            let reason = "Không có phản hồi hoặc bị chặn bởi bộ lọc an toàn.";
-            if (res.candidates?.[0]?.finishReason) {
-              reason = `Lý do dừng: ${res.candidates[0].finishReason}`;
-            } else if (res.promptFeedback?.blockReason) {
-              reason = `Bị chặn bởi bộ lọc: ${res.promptFeedback.blockReason}`;
-            }
-            throw new Error(`Không nhận được phản hồi văn bản từ AI cho phân khúc này. Vui lòng kiểm tra lại API Key. (${reason})`);
-          }
-          if (res.usageMetadata) {
-            chunkTokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
-            chunkTokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
-            chunkTokenUsage.total = res.usageMetadata.totalTokenCount || 0;
-          }
-        } else {
-          const res = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${keyToUse.trim()}` },
-            body: JSON.stringify({
-              model: selectedModel,
-              messages: [{ role: "user", content: shotPrompt }],
-              response_format: { type: "json_object" }
-            })
-          });
-          
-          if (!res.ok) {
-            let errorMsg = `API Error: ${res.status} ${res.statusText}`;
-            try {
-              const errData = await res.json();
-              if (errData?.error?.message) {
-                errorMsg = errData.error.message;
+        const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
+
+        await new Promise<void>((resolve, reject) => {
+          queueStore.enqueue({
+            id: `chunk_prod_${chunkIdx}_${Date.now()}`,
+            projectId: activeProjectId || "default",
+            projectName: currentProjName,
+            type: "text",
+            label: `Tạo Phân cảnh phân đoạn ${chunkIdx}/${totalChunks}`,
+            run: async () => {
+              try {
+                if (selectedModel.startsWith("gemini")) {
+                  const ai = new GoogleGenAI({ apiKey: keyToUse.trim() });
+                  const res = await ai.models.generateContent({
+                    model: selectedModel,
+                    contents: [{ role: "user", parts: [{ text: shotPrompt }] }],
+                    config: { 
+                      responseMimeType: "application/json",
+                      safetySettings: [
+                        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+                      ]
+                    }
+                  });
+                  chunkResText = getResponseText(res);
+                  if (!chunkResText) {
+                    let reason = "Không có phản hồi hoặc bị chặn bởi bộ lọc an toàn.";
+                    if (res.candidates?.[0]?.finishReason) {
+                      reason = `Lý do dừng: ${res.candidates[0].finishReason}`;
+                    } else if (res.promptFeedback?.blockReason) {
+                      reason = `Bị chặn bởi bộ lọc: ${res.promptFeedback.blockReason}`;
+                    }
+                    throw new Error(`Không nhận được phản hồi văn bản từ AI cho phân khúc này. Vui lòng kiểm tra lại API Key. (${reason})`);
+                  }
+                  if (res.usageMetadata) {
+                    chunkTokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
+                    chunkTokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
+                    chunkTokenUsage.total = res.usageMetadata.totalTokenCount || 0;
+                  }
+                } else {
+                  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${keyToUse.trim()}` },
+                    body: JSON.stringify({
+                      model: selectedModel,
+                      messages: [{ role: "user", content: shotPrompt }],
+                      response_format: { type: "json_object" }
+                    })
+                  });
+                  
+                  if (!res.ok) {
+                    let errorMsg = `API Error: ${res.status} ${res.statusText}`;
+                    try {
+                      const errData = await res.json();
+                      if (errData?.error?.message) {
+                        errorMsg = errData.error.message;
+                      }
+                    } catch (e) {}
+                    throw new Error(errorMsg);
+                  }
+                  
+                  const data = await res.json();
+                  if (!data.choices || data.choices.length === 0) {
+                    throw new Error("Không nhận được dữ liệu phản hồi (choices) từ OpenAI API.");
+                  }
+                  chunkResText = data.choices[0].message?.content;
+                  if (data.usage) {
+                    chunkTokenUsage.prompt = data.usage.prompt_tokens || 0;
+                    chunkTokenUsage.completion = data.usage.completion_tokens || 0;
+                    chunkTokenUsage.total = data.usage.total_tokens || 0;
+                  }
+                }
+                resolve();
+              } catch (err) {
+                reject(err);
               }
-            } catch (e) {}
-            throw new Error(errorMsg);
-          }
-          
-          const data = await res.json();
-          if (!data.choices || data.choices.length === 0) {
-            throw new Error("Không nhận được dữ liệu phản hồi (choices) từ OpenAI API.");
-          }
-          chunkResText = data.choices[0].message?.content;
-          if (data.usage) {
-            chunkTokenUsage.prompt = data.usage.prompt_tokens || 0;
-            chunkTokenUsage.completion = data.usage.completion_tokens || 0;
-            chunkTokenUsage.total = data.usage.total_tokens || 0;
-          }
-        }
+            }
+          });
+        });
 
         // chunkResText check is handled immediately above for Gemini and below for OpenAI
         if (!chunkResText) {
@@ -2268,8 +2982,8 @@ export default function App() {
           totalTokenUsage.total += result.tokenUsage.total;
 
           completedChunks++;
-          setProgress({
-            step: `Generating Cinematic Prompts (Stage 2 - ${apiMode === 'parallel' ? 'Parallel' : 'Sequential'})...`,
+          updateProjectPromptProgress(projId, {
+            step: `Generating Cinematic Prompts (Stage 2)...`,
             percent: 10 + Math.floor((completedChunks / totalChunks) * 85),
             currentShot: Math.min(completedChunks * chunkSize, totalLines),
             totalShots: totalLines
@@ -2301,22 +3015,318 @@ export default function App() {
         shots: cleanShots
       };
 
-      setProgress({ step: "Finalizing Production Package...", percent: 100, currentShot: totalLines, totalShots: totalLines });
+      updateProjectPromptProgress(projId, { step: "Finalizing Production Package...", percent: 100, currentShot: totalLines, totalShots: totalLines });
       await new Promise(r => setTimeout(r, 500));
       
-      setProject(updatedProject);
-      saveProjectCacheToDB(updatedProject);
+      if (projId === activeProjectId) {
+        setProject(updatedProject);
+        saveProjectCacheToDB(updatedProject);
 
-      setIsRefMappingApproved(true);
-      localStorage.setItem("ai_ref_mapping_approved", "true");
+        setIsRefMappingApproved(true);
+        localStorage.setItem("ai_ref_mapping_approved", "true");
+      } else {
+        // Update background project in projects list and DB
+        setProjects(prev => prev.map(p => {
+          if (p.id === projId) {
+            const updatedProj: ProjectInfo = {
+              ...p,
+              projectData: updatedProject,
+              updatedAt: new Date().toISOString()
+            };
+            saveProjectToDB(updatedProj);
+            return updatedProj;
+          }
+          return p;
+        }));
+      }
 
     } catch (err: any) {
       console.error("AI Stage 2 shot writing error:", err);
       setError(err.message);
     } finally {
-      setIsGenerating(false);
-      setIsWritingShots(false);
-      setProgress({ step: "", percent: 0, currentShot: 0, totalShots: 0 });
+      const projId = activeProjectId || "default";
+      updateProjectPromptProgress(projId, {
+        isWritingShots: false,
+        percent: 0,
+        currentShot: 0,
+        totalShots: 0,
+        step: ""
+      });
+    }
+  };
+
+  const generatePromptsAndVideosAuto = async () => {
+    if (!project) return;
+    
+    // 1. Validation check for reference images
+    const charsComplete = project.characters.length > 0 && project.characters.every(c => c.imageUrl && c.imageUrl.trim() !== "");
+    const bgComplete = project.backgrounds.length > 0 && project.backgrounds.every(b => b.imageUrl && b.imageUrl.trim() !== "");
+    const propsComplete = !project.props || project.props.length === 0 || project.props.every(p => !p.name || (p.imageUrl && p.imageUrl.trim() !== ""));
+    
+    if (!(charsComplete && bgComplete && propsComplete)) {
+      alert("Yêu cầu các ảnh tham chiếu phải đầy đủ hết mới cho phép chạy tự động!");
+      return;
+    }
+
+    const projId = activeProjectId || "default";
+    updateProjectPromptProgress(projId, {
+      isWritingShots: true,
+      percent: 5,
+      currentShot: 0,
+      totalShots: srtData.length,
+      step: "Initializing auto cinematic workflow..."
+    });
+    setError(null);
+
+    try {
+      // 2. Generate prompts first (same logic as generateCinematicShots)
+      const activeKeys = apiMode === 'parallel' 
+        ? apiKeysList.split(/[\n,]+/).map(k => k.trim()).filter(Boolean)
+        : [apiKey].map(k => k.trim()).filter(Boolean);
+
+      if (activeKeys.length === 0) {
+        throw new Error(apiMode === 'parallel' ? "Vui lòng nhập ít nhất một API Key trong phần cấu hình song song." : "Vui lòng nhập API Key trong phần cấu hình.");
+      }
+
+      let finalSrt = srtData;
+      let finalScript = scriptData;
+      if (mergeShortLines) {
+        const merged = mergeShortSRTAndScript(srtData, scriptData, 2.0, maxDuration);
+        finalSrt = merged.srt;
+        finalScript = merged.script;
+      }
+
+      const activeRulesText = promptRules
+        .filter(r => r.enabled && r.text.trim())
+        .map(r => r.text.trim())
+        .join("\n- ");
+
+      const currentStyle = styles.find(s => s.id === selectedStyleId) || styles[0];
+      const chunkSize = 25;
+      const totalLines = finalSrt.length;
+      const totalChunks = Math.ceil(totalLines / chunkSize);
+      let totalTokenUsage = { prompt: 0, completion: 0, total: 0 };
+
+      const processChunk = async (i: number, chunkIdx: number, totalChunks: number, keyToUse: string) => {
+        const chunkData = finalSrt.slice(i, i + chunkSize).map((s, idx) => ({
+          id: i + idx + 1,
+          time: s.time,
+          char: finalScript[i + idx]?.character || "Unknown",
+          text: finalScript[i + idx]?.dialogue || s.text,
+          type: finalScript[i + idx]?.type || "spoken",
+          emotion: finalScript[i + idx]?.emotion || "neutral"
+        }));
+
+        const shotPrompt = generateShotPrompt(
+          chunkData, 
+          {
+            characters: project.characters.map((c: any) => c.name),
+            backgrounds: project.backgrounds.map((b: any) => b.location)
+          }, 
+          activeRulesText,
+          project.situations
+        );
+
+        let chunkResText = "";
+        let chunkTokenUsage = { prompt: 0, completion: 0, total: 0 };
+        const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
+
+        await new Promise<void>((resolve, reject) => {
+          queueStore.enqueue({
+            id: `chunk_auto_${chunkIdx}_${Date.now()}`,
+            projectId: activeProjectId || "default",
+            projectName: currentProjName,
+            type: "text",
+            label: `Tạo Phân cảnh phân đoạn ${chunkIdx}/${totalChunks}`,
+            run: async () => {
+              try {
+                if (selectedModel.startsWith("gemini")) {
+                  const ai = new GoogleGenAI({ apiKey: keyToUse.trim() });
+                  const res = await ai.models.generateContent({
+                    model: selectedModel,
+                    contents: [{ role: "user", parts: [{ text: shotPrompt }] }],
+                    config: { 
+                      responseMimeType: "application/json",
+                      safetySettings: [
+                        { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                        { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+                      ]
+                    }
+                  });
+                  chunkResText = getResponseText(res);
+                  if (!chunkResText) throw new Error("Không nhận được phản hồi từ AI.");
+                  if (res.usageMetadata) {
+                    chunkTokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
+                    chunkTokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
+                    chunkTokenUsage.total = res.usageMetadata.totalTokenCount || 0;
+                  }
+                } else {
+                  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${keyToUse.trim()}` },
+                    body: JSON.stringify({
+                      model: selectedModel,
+                      messages: [{ role: "user", content: shotPrompt }],
+                      response_format: { type: "json_object" }
+                    })
+                  });
+                  if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                  const data = await res.json();
+                  chunkResText = data.choices[0].message?.content;
+                  if (data.usage) {
+                    chunkTokenUsage.prompt = data.usage.prompt_tokens || 0;
+                    chunkTokenUsage.completion = data.usage.completion_tokens || 0;
+                    chunkTokenUsage.total = data.usage.total_tokens || 0;
+                  }
+                }
+                resolve();
+              } catch (err) {
+                reject(err);
+              }
+            }
+          });
+        });
+
+        if (!chunkResText) {
+          throw new Error("Không nhận được phản hồi văn bản từ AI cho phân khúc này.");
+        }
+
+        const chunkRes = safeJsonParse(chunkResText);
+        const styledShots = chunkRes.shots.map((shot: Shot, idx: number) => {
+          let finalPrompt = shot.prompt.trim();
+          if (!finalPrompt.endsWith('.')) finalPrompt += '.';
+          const fullPrompt = `${finalPrompt} Visual Style: ${currentStyle.characterSuffix}, ${currentStyle.backgroundSuffix}.`;
+          const detected = detectCharacters(fullPrompt, project.characters);
+          const initialCharacter = detected.join(", ") || shot.character;
+          const srtBlock = finalSrt[i + idx];
+          const range = srtBlock ? (srtBlock.index.includes("-") ? srtBlock.index : `${srtBlock.index}-${srtBlock.index}`) : `${shot.id}-${shot.id}`;
+          return {
+            ...shot,
+            id: shot.id || (i + idx + 1),
+            character: initialCharacter,
+            prompt: fullPrompt,
+            range: range
+          };
+        });
+
+        return { styledShots, tokenUsage: chunkTokenUsage };
+      };
+
+      const tasks: Array<{ i: number; chunkIdx: number }> = [];
+      for (let i = 0; i < totalLines; i += chunkSize) {
+        tasks.push({ i, chunkIdx: Math.floor(i / chunkSize) + 1 });
+      }
+
+      const finalShots: Shot[] = new Array(totalLines);
+      let completedChunks = 0;
+      let nextTaskIdx = 0;
+
+      const runWorker = async (workerId: number) => {
+        const workerKey = activeKeys[workerId % activeKeys.length];
+        while (nextTaskIdx < tasks.length) {
+          const currentIdx = nextTaskIdx++;
+          const task = tasks[currentIdx];
+          const result = await processChunk(task.i, task.chunkIdx, totalChunks, workerKey);
+          for (let idx = 0; idx < result.styledShots.length; idx++) {
+            finalShots[task.i + idx] = result.styledShots[idx];
+          }
+          completedChunks++;
+          updateProjectPromptProgress(projId, {
+            step: `Tự động tạo Prompts Shots (Stage 2)...`,
+            percent: 5 + Math.floor((completedChunks / totalChunks) * 45),
+            currentShot: Math.min(completedChunks * chunkSize, totalLines),
+            totalShots: totalLines
+          });
+        }
+      };
+
+      const concurrency = Math.min(activeKeys.length, tasks.length);
+      const workers: Promise<void>[] = [];
+      for (let w = 0; w < concurrency; w++) {
+        workers.push(runWorker(w));
+      }
+      await Promise.all(workers);
+
+      const cleanShots = finalShots.filter(Boolean);
+      const updatedProject: ProjectData = {
+        ...project,
+        shots: cleanShots
+      };
+
+      if (projId === activeProjectId) {
+        projectRef.current = updatedProject;
+        setProject(updatedProject);
+        saveProjectCacheToDB(updatedProject);
+        setIsRefMappingApproved(true);
+        localStorage.setItem("ai_ref_mapping_approved", "true");
+
+        // Sync projects list state and ref immediately to avoid stale closures
+        const updatedProjects = projectsRef.current.map(p => {
+          if (p.id === activeProjectId) {
+            const updatedProj: ProjectInfo = {
+              ...p,
+              projectData: updatedProject,
+              updatedAt: new Date().toISOString()
+            };
+            saveProjectToDB(updatedProj);
+            return updatedProj;
+          }
+          return p;
+        });
+        projectsRef.current = updatedProjects;
+        setProjects(updatedProjects);
+
+        updateProjectPromptProgress(projId, {
+          isWritingShots: false,
+          step: "Đang xếp hàng tạo video tự động...",
+          percent: 60
+        });
+
+        // 3. Immediately launch video generation batch for all shots
+        const allIndices = cleanShots.map((_, i) => i);
+        const newSelected: Record<number, boolean> = {};
+        allIndices.forEach(idx => {
+          newSelected[idx] = true;
+        });
+        setSelectedShots(newSelected);
+
+        await new Promise(r => setTimeout(r, 200));
+        generateVideoBatch(allIndices);
+      } else {
+        // Update background project in projects list and DB
+        setProjects(prev => prev.map(p => {
+          if (p.id === projId) {
+            const updatedProj: ProjectInfo = {
+              ...p,
+              projectData: updatedProject,
+              updatedAt: new Date().toISOString()
+            };
+            saveProjectToDB(updatedProj);
+            return updatedProj;
+          }
+          return p;
+        }));
+
+        updateProjectPromptProgress(projId, {
+          isWritingShots: false,
+          step: "Hoàn thành tạo Prompts! Click vào dự án để bắt đầu render video.",
+          percent: 100
+        });
+      }
+
+    } catch (err: any) {
+      console.error("Auto prompt and video generation error:", err);
+      setError(err.message);
+      const projId = activeProjectId || "default";
+      updateProjectPromptProgress(projId, {
+        isWritingShots: false,
+        percent: 0,
+        currentShot: 0,
+        totalShots: 0,
+        step: ""
+      });
     }
   };
 
@@ -2432,36 +3442,53 @@ export default function App() {
     try {
       const prompt = generateThumbnailAnalysisPrompt(thumbStoryInput, thumbTitlesInput);
       let resText = "";
-      
-      if (selectedModel.startsWith("gemini")) {
-        const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-        const res = await ai.models.generateContent({
-          model: selectedModel,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          config: { 
-            responseMimeType: "application/json",
-            safetySettings: [
-              { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-            ]
+      const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
+
+      await new Promise<void>((resolve, reject) => {
+        queueStore.enqueue({
+          id: "analyze_thumb_" + Date.now(),
+          projectId: activeProjectId || "default",
+          projectName: currentProjName,
+          type: "text",
+          label: "Phân tích kịch bản Thumbnail",
+          run: async () => {
+            try {
+              if (selectedModel.startsWith("gemini")) {
+                const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+                const res = await ai.models.generateContent({
+                  model: selectedModel,
+                  contents: [{ role: "user", parts: [{ text: prompt }] }],
+                  config: { 
+                    responseMimeType: "application/json",
+                    safetySettings: [
+                      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+                    ]
+                  }
+                });
+                resText = getResponseText(res);
+              } else {
+                const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: [{ role: "user", content: prompt }],
+                    response_format: { type: "json_object" }
+                  })
+                });
+                const data = await res.json();
+                resText = data.choices[0].message.content;
+              }
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
           }
         });
-        resText = getResponseText(res);
-      } else {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_object" }
-          })
-        });
-        const data = await res.json();
-        resText = data.choices[0].message.content;
-      }
+      });
       
       const extractedData = safeJsonParse(resText, "Không thể phân tích dữ liệu JSON trả về từ AI. Hãy thử phân tích lại.");
       setThumbData(extractedData);
@@ -2510,36 +3537,53 @@ export default function App() {
     try {
       const prompt = generateSEOPrompt(seoSrtInput1);
       let resText = "";
+      const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
 
-      if (selectedModel.startsWith("gemini")) {
-        const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
-        const res = await ai.models.generateContent({
-          model: selectedModel,
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          config: { 
-            responseMimeType: "application/json",
-            safetySettings: [
-              { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-              { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
-            ]
+      await new Promise<void>((resolve, reject) => {
+        queueStore.enqueue({
+          id: "generate_seo_" + Date.now(),
+          projectId: activeProjectId || "default",
+          projectName: currentProjName,
+          type: "text",
+          label: "Tạo dữ liệu SEO & BGM",
+          run: async () => {
+            try {
+              if (selectedModel.startsWith("gemini")) {
+                const ai = new GoogleGenAI({ apiKey: apiKey.trim() });
+                const res = await ai.models.generateContent({
+                  model: selectedModel,
+                  contents: [{ role: "user", parts: [{ text: prompt }] }],
+                  config: { 
+                    responseMimeType: "application/json",
+                    safetySettings: [
+                      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+                      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
+                    ]
+                  }
+                });
+                resText = getResponseText(res);
+              } else {
+                const res = await fetch("https://api.openai.com/v1/chat/completions", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+                  body: JSON.stringify({
+                    model: selectedModel,
+                    messages: [{ role: "user", content: prompt }],
+                    response_format: { type: "json_object" }
+                  })
+                });
+                const data = await res.json();
+                resText = data.choices[0].message.content;
+              }
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
           }
         });
-        resText = getResponseText(res);
-      } else {
-        const res = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model: selectedModel,
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_object" }
-          })
-        });
-        const data = await res.json();
-        resText = data.choices[0].message.content;
-      }
+      });
 
       const parsed = safeJsonParse(resText, "Không thể phân tích dữ liệu JSON trả về từ AI. Hãy thử tạo lại.");
       if (parsed && (parsed.section1 || parsed.section2 || parsed.bgm_music_prompts)) {
@@ -2598,25 +3642,47 @@ export default function App() {
     for (let i = 0; i < modelsToTry.length; i++) {
       const currentModel = modelsToTry[i];
       try {
-        const response = await fetch(`${cleanApiUrl}/api/generate`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            prompt: thumbMasterPrompt,
-            count: 1,
-            aspect_ratio: "IMAGE_ASPECT_RATIO_LANDSCAPE",
-            model: currentModel
-          })
+        let response: any = null;
+        const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
+
+        await new Promise<void>((resolve, reject) => {
+          queueStore.enqueue({
+            id: "thumb_img_" + Date.now(),
+            projectId: activeProjectId || "default",
+            projectName: currentProjName,
+            type: "image",
+            label: "Sinh ảnh Thumbnail",
+            run: async () => {
+              try {
+                const res = await fetch(`${cleanApiUrl}/api/generate`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json"
+                  },
+                  body: JSON.stringify({
+                    prompt: thumbMasterPrompt,
+                    count: 1,
+                    aspect_ratio: "IMAGE_ASPECT_RATIO_LANDSCAPE",
+                    model: currentModel
+                  })
+                });
+                response = res;
+                resolve();
+              } catch (err) {
+                reject(err);
+              }
+            }
+          });
         });
 
-        if (!response.ok) {
-          let errorMsg = `Mã lỗi HTTP: ${response.status}`;
+        if (!response || !response.ok) {
+          let errorMsg = response ? `Mã lỗi HTTP: ${response.status}` : "Không nhận được phản hồi";
           try {
-            const errData = await response.json();
-            if (errData && errData.error) {
-              errorMsg = errData.error;
+            if (response) {
+              const errData = await response.json();
+              if (errData && errData.error) {
+                errorMsg = errData.error;
+              }
             }
           } catch (e) {}
           throw new Error(errorMsg);
@@ -2720,9 +3786,15 @@ export default function App() {
   };
 
   const generateImage = async (type: 'character' | 'background' | 'shot' | 'prop', index: number, customPrompt?: string) => {
-    if (!project) return;
-    const key = `${type}_${index}`;
-    const statusKey = `image_${type}_${index}`;
+    const targetProjectId = activeProjectId;
+    if (!targetProjectId) return;
+    const targetProject = projects.find(p => p.id === targetProjectId);
+    if (!targetProject) return;
+    const targetProjectData = targetProject.projectData;
+    const targetProjPath = targetProject.projectPath;
+
+    const key = `${targetProjectId}_${type}_${index}`;
+    const statusKey = `${targetProjectId}_image_${type}_${index}`;
     
     setGeneratingImages(prev => ({ ...prev, [key]: true }));
     setError(null);
@@ -2733,12 +3805,12 @@ export default function App() {
     });
 
     const asset = type === 'character' 
-      ? project.characters[index] 
+      ? targetProjectData.characters[index] 
       : type === 'background' 
-      ? project.backgrounds[index]
+      ? targetProjectData.backgrounds[index]
       : type === 'prop'
-      ? project.props?.[index]
-      : project.shots[index];
+      ? targetProjectData.props?.[index]
+      : targetProjectData.shots[index];
 
     if (!asset) return;
 
@@ -2883,8 +3955,8 @@ export default function App() {
           }
 
           // Persist the media ID and account ID in application state
-          setProject(prev => {
-            if (!prev) return null;
+          updateProjectDataById(targetProjectId, prev => {
+            if (!prev) return prev;
             const newProject = { ...prev };
             const targetAccId = uploadRes.accountId || account_id || undefined;
 
@@ -2982,7 +4054,7 @@ export default function App() {
 
         try {
           const reqBody: any = {
-            prompt: cleanPromptForAiModel(prompt, project),
+            prompt: cleanPromptForAiModel(prompt, targetProjectData),
             count: 1,
             aspect_ratio,
             model: currentModel,
@@ -2993,20 +4065,43 @@ export default function App() {
             reqBody.account_id = account_id;
           }
 
-          const response = await fetch(`${cleanApiUrl}/api/generate`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify(reqBody)
+          let response: any = null;
+          const currentProjName = projects.find(p => p.id === targetProjectId)?.name || "Dự án";
+          const typeLabel = type === 'character' ? 'Nhân vật' : type === 'background' ? 'Bối cảnh' : type === 'prop' ? 'Đạo cụ' : 'Khung hình';
+
+          await new Promise<void>((resolve, reject) => {
+            queueStore.enqueue({
+              id: `img_${type}_${index}_${attempt}_${Date.now()}`,
+              projectId: targetProjectId || "default",
+              projectName: currentProjName,
+              type: "image",
+              label: `Sinh ảnh ${typeLabel}: ${name} (Lần ${attempt})`,
+              run: async () => {
+                try {
+                  const res = await fetch(`${cleanApiUrl}/api/generate`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(reqBody)
+                  });
+                  response = res;
+                  resolve();
+                } catch (err) {
+                  reject(err);
+                }
+              }
+            });
           });
 
-          if (!response.ok) {
-            let errorMsg = `Mã lỗi HTTP: ${response.status}`;
+          if (!response || !response.ok) {
+            let errorMsg = response ? `Mã lỗi HTTP: ${response.status}` : "Không nhận được phản hồi";
             try {
-              const errData = await response.json();
-              if (errData && errData.error) {
-                errorMsg = errData.error;
+              if (response) {
+                const errData = await response.json();
+                if (errData && errData.error) {
+                  errorMsg = errData.error;
+                }
               }
             } catch (e) {
               // Fallback to HTTP error if response is not JSON
@@ -3069,7 +4164,7 @@ export default function App() {
         }
       }
 
-      setProject(prev => {
+      updateProjectDataById(targetProjectId, prev => {
         if (!prev) return prev;
         const newProject = { ...prev };
 
@@ -3132,7 +4227,7 @@ export default function App() {
           fetch(url)
             .then(res => res.blob())
             .then(blob => {
-              saveFileToProject(saveSubDir, saveName, blob);
+              saveFileToProject(saveSubDir, saveName, blob, undefined, targetProjPath);
             })
             .catch(err => console.error("Auto-save image failed:", err));
         }
@@ -3165,14 +4260,15 @@ export default function App() {
     subDir: string | null, 
     filename: string, 
     blob: Blob | null, 
-    textData?: string
+    textData?: string,
+    customProjPath?: string
   ): Promise<boolean> => {
     if (!(window as any).electronAPI) {
       console.warn("saveFileToProject is only supported in Electron environment.");
       return false;
     }
     try {
-      const folderPath = localStorage.getItem("ai_image_folder_path") || folderPathInput;
+      const folderPath = customProjPath || folderPathInput || localStorage.getItem("ai_image_folder_path");
       if (!folderPath) {
         console.warn("No local directory is selected/linked yet.");
         return false;
@@ -3267,15 +4363,23 @@ export default function App() {
   };
 
   const generateVideo = async (index: number, overridePrompt?: string) => {
-    if (!project) return;
+    if (abortBatchRef.current) return;
+
+    const targetProjectId = activeProjectId;
+    if (!targetProjectId) return;
+    const targetProject = projectsRef.current.find(p => p.id === targetProjectId);
+    if (!targetProject) return;
+    const targetProjectData = targetProject.projectData;
+    const targetProjPath = targetProject.projectPath;
     
     // Ensure directory permissions under active user click gesture
     await ensureDirectoryPermission();
 
-    const shot = project.shots[index];
+    const shot = targetProjectData.shots[index];
+    if (!shot) return;
     const promptToSend = overridePrompt !== undefined ? overridePrompt : shot.prompt;
-    const key = index;
-    const statusKey = `video_${index}`;
+    const key = `${targetProjectId}_${index}`;
+    const statusKey = `${targetProjectId}_video_${index}`;
 
     setGeneratingVideos(prev => ({ ...prev, [key]: true }));
     setGenerationErrors(prev => {
@@ -3286,8 +4390,8 @@ export default function App() {
     
     // Clear any previous error
     const updateShotError = (errStr: string | null) => {
-      setProject(prev => {
-        if (!prev) return null;
+      updateProjectDataById(targetProjectId, prev => {
+        if (!prev) return prev;
         const newShots = [...prev.shots];
         newShots[index] = { ...newShots[index], videoError: errStr || undefined };
         return { ...prev, shots: newShots };
@@ -3298,10 +4402,10 @@ export default function App() {
 
     try {
       // Find matched Character reference
-      const matchedChars = getMatchedCharacters(shot, project.characters);
+      const matchedChars = getMatchedCharacters(shot, targetProjectData.characters);
 
       // Find matched Background reference
-      const matchedBgs = getMatchedBackgrounds(shot, project.backgrounds);
+      const matchedBgs = getMatchedBackgrounds(shot, targetProjectData.backgrounds);
 
       // 1. Gather all candidates up to 3 references
       const candidates: Array<{
@@ -3360,7 +4464,7 @@ export default function App() {
       });
 
       // D. Auto-detected props
-      const matchedProps = getMatchedProps(shot, project.props || []);
+      const matchedProps = getMatchedProps(shot, targetProjectData.props || []);
       matchedProps.forEach(prop => {
         if (prop.imageUrl && candidates.length < 3) {
           const exists = candidates.some(c => c.url === prop.imageUrl);
@@ -3441,8 +4545,8 @@ export default function App() {
             }
 
             // Persist the media ID and account ID in application state
-            setProject(prev => {
-              if (!prev) return null;
+            updateProjectDataById(targetProjectId, prev => {
+              if (!prev) return prev;
               const newProject = { ...prev };
               const targetAccId = uploadRes.accountId || account_id || undefined;
 
@@ -3518,7 +4622,7 @@ export default function App() {
       ]);
 
       const reqBody: any = {
-        prompt: cleanPromptForAiModel(promptToSend, project),
+        prompt: cleanPromptForAiModel(promptToSend, targetProjectData),
         aspect_ratio: videoAspectRatio,
         model: chosenModel
       };
@@ -3533,6 +4637,9 @@ export default function App() {
       let lastVideoErrorMsg = "";
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (abortBatchRef.current) {
+          throw new Error("Batch rendering stopped by user");
+        }
         if (attempt > 1) {
           setSystemLogs(prev => [
             ...prev,
@@ -3545,25 +4652,55 @@ export default function App() {
           await new Promise(resolve => setTimeout(resolve, retryDelay * 1000));
         }
 
+        if (abortBatchRef.current) {
+          throw new Error("Batch rendering stopped by user");
+        }
+
         setGenerationStatuses(prev => ({
           ...prev,
           [statusKey]: `Đang gọi API video (lần ${attempt}/${maxAttempts})...`
         }));
 
         try {
-          const response = await fetch(`${cleanApiUrl}/api/generate_video`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify(reqBody)
+          let response: any = null;
+          const currentProjName = projectsRef.current.find(p => p.id === targetProjectId)?.name || "Dự án";
+
+          await new Promise<void>((resolve, reject) => {
+            queueStore.enqueue({
+              id: `vid_${index}_${attempt}_${Date.now()}`,
+              projectId: targetProjectId || "default",
+              projectName: currentProjName,
+              type: "video",
+              label: `Dựng video Phân cảnh #${index + 1} (Lần ${attempt})`,
+              run: async () => {
+                if (abortBatchRef.current) {
+                  reject(new Error("Batch rendering stopped by user"));
+                  return;
+                }
+                try {
+                  const res = await fetch(`${cleanApiUrl}/api/generate_video`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(reqBody)
+                  });
+                  response = res;
+                  resolve();
+                } catch (err) {
+                  reject(err);
+                }
+              }
+            });
           });
 
-          if (!response.ok) {
-            let errorMsg = `Mã lỗi HTTP video: ${response.status}`;
+          if (!response || !response.ok) {
+            let errorMsg = response ? `Mã lỗi HTTP video: ${response.status}` : "Không nhận được phản hồi";
             try {
-              const errData = await response.json();
-              if (errData && errData.error) errorMsg = errData.error;
+              if (response) {
+                const errData = await response.json();
+                if (errData && errData.error) errorMsg = errData.error;
+              }
             } catch (e) {}
             throw new Error(errorMsg);
           }
@@ -3584,8 +4721,8 @@ export default function App() {
         throw new Error(lastVideoErrorMsg || "Không thể tạo video từ VEO API sau mọi lượt thử.");
       }
 
-      setProject(prev => {
-        if (!prev) return null;
+      updateProjectDataById(targetProjectId, prev => {
+        if (!prev) return prev;
         const newShots = [...prev.shots];
         newShots[index] = { ...newShots[index], videoUrl, videoError: undefined };
         return { ...prev, shots: newShots };
@@ -3598,7 +4735,7 @@ export default function App() {
 
       // Automatically save successfully generated video directly to local linked directory if auto-download is enabled
       if (autoDownloadVideos || (window as any).electronAPI) {
-        downloadSingleVideo(index, false, videoUrl);
+        downloadSingleVideo(index, false, videoUrl, targetProjPath);
       }
 
       // Clear generation error on success
@@ -3630,7 +4767,8 @@ export default function App() {
   };
 
   const generateVideoBatch = async (indices: number[]) => {
-    if (!project || indices.length === 0) return;
+    const activeProj = projectRef.current;
+    if (!activeProj || indices.length === 0) return;
     
     // Ensure directory handle and write permissions are fully set up before starting batch rendering (user gesture active)
     await ensureDirectoryPermission();
@@ -3714,6 +4852,23 @@ export default function App() {
 
   const handleStopBatchRendering = () => {
     abortBatchRef.current = true;
+    setIsBatchRendering(false);
+    
+    // Clear pending video tasks from queue
+    try {
+      const currentQueue = queueStore.getQueue();
+      currentQueue.forEach(item => {
+        if (
+          item.projectId === (activeProjectId || "default") &&
+          item.type === "video" &&
+          item.status === "pending"
+        ) {
+          queueStore.remove(item.id);
+        }
+      });
+    } catch (err) {
+      console.error("Error clearing video queue:", err);
+    }
   };
 
   const downloadAllSuccessVideos = async () => {
@@ -3768,9 +4923,11 @@ export default function App() {
     }
   };
 
-  const downloadSingleVideo = async (index: number, showSuccessAlert = true, overrideUrl?: string) => {
-    if (!project) return;
-    const shot = project.shots[index];
+  const downloadSingleVideo = async (index: number, showSuccessAlert = true, overrideUrl?: string, customProjPath?: string) => {
+    const activeProj = projects.find(p => p.projectPath === customProjPath) || projects.find(p => p.id === activeProjectId);
+    const targetProjData = activeProj ? activeProj.projectData : project;
+    if (!targetProjData) return;
+    const shot = targetProjData.shots[index];
     const url = overrideUrl || (shot ? shot.videoUrl : undefined);
     if (!url) return;
     const filename = `${index + 1}.mp4`;
@@ -3780,7 +4937,7 @@ export default function App() {
         setProgress({ step: `Đang tải ${filename}...`, percent: 30 });
         const response = await fetch(url);
         const blob = await response.blob();
-        const ok = await saveFileToProject("videos", filename, blob);
+        const ok = await saveFileToProject("videos", filename, blob, undefined, customProjPath);
         if (ok) {
           setSystemLogs(prev => [
             ...prev,
@@ -5494,6 +6651,24 @@ export default function App() {
 
   const currentStyle = styles.find(s => s.id === selectedStyleId) || styles[0];
 
+  const activeProgProgress = projectPromptProgress[activeProjectId || "default"];
+  const isAnalyzingActive = activeProgProgress?.isAnalyzing || false;
+  const isWritingShotsActive = activeProgProgress?.isWritingShots || false;
+  const isActiveProjectBusy = isGenerating || isAnalyzingActive || isWritingShotsActive;
+
+  const currentStepText = isGenerating 
+    ? progress.step 
+    : (activeProgProgress?.step || "Đang xử lý...");
+  const currentPercent = isGenerating 
+    ? progress.percent 
+    : (activeProgProgress?.percent || 0);
+  const currentShotNum = isGenerating 
+    ? progress.currentShot 
+    : activeProgProgress?.currentShot;
+  const totalShotsNum = isGenerating 
+    ? progress.totalShots 
+    : activeProgProgress?.totalShots;
+
   if (!isLoggedIn) {
     return <LoginScreen onLoginSuccess={() => setIsLoggedIn(true)} />;
   }
@@ -6145,6 +7320,67 @@ export default function App() {
           "border-r border-white/15 bg-black/30 backdrop-blur-xl flex flex-col gap-10 overflow-y-auto custom-scrollbar z-40 relative transition-all duration-300 ease-in-out select-none",
           isSidebarOpen ? "w-96 p-8 opacity-100" : "w-0 p-0 opacity-0 overflow-hidden border-r-0 invisible"
         )}>
+          <section className="space-y-4 border-b border-white/10 pb-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-indigo-400 font-extrabold drop-shadow-[0_0_8px_rgba(99,102,241,0.3)]">
+                <Database className="w-3.5 h-3.5" />
+                <label className="text-[10px] uppercase tracking-[0.3em] font-black">00 // PROJECT_MANAGER</label>
+              </div>
+              <button
+                onClick={() => handleCreateProject()}
+                className="p-1 text-zinc-400 hover:text-white hover:bg-white/5 rounded-md transition-all cursor-pointer"
+                title="Tạo dự án mới"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="relative">
+                <select
+                  value={activeProjectId || ""}
+                  onChange={(e) => switchProject(e.target.value)}
+                  className="w-full bg-black/40 border border-white/15 rounded-xl p-3.5 pr-10 text-xs text-zinc-200 outline-none focus:border-indigo-500/60 focus:bg-black/60 transition-all font-bold appearance-none cursor-pointer"
+                >
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id} className="bg-zinc-900 text-zinc-200">
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-zinc-400">
+                  <ChevronDown className="w-4 h-4" />
+                </div>
+              </div>
+
+              {activeProjectId && (
+                <div className="flex items-center justify-end gap-1.5">
+                  <button
+                    onClick={() => handleRenameProject(activeProjectId)}
+                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-bold text-zinc-300 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                    title="Đổi tên dự án"
+                  >
+                    Đổi tên
+                  </button>
+                  <button
+                    onClick={() => handleCloneProject(activeProjectId)}
+                    className="px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-bold text-zinc-300 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                    title="Nhân bản dự án"
+                  >
+                    Nhân bản
+                  </button>
+                  <button
+                    onClick={() => handleDeleteProject(activeProjectId)}
+                    className="px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 text-[10px] font-bold text-rose-400 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                    title="Xóa dự án"
+                  >
+                    Xóa
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+
           <section className="space-y-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-indigo-400 font-extrabold drop-shadow-[0_0_8px_rgba(99,102,241,0.3)]">
@@ -6621,21 +7857,21 @@ export default function App() {
 
           <div className="mt-auto pt-8 border-t border-white/15 space-y-4 relative z-50">
             <button
-              disabled={!isReady || isGenerating}
+              disabled={!isReady || isActiveProjectBusy}
               onClick={extractAssetsAndSituations}
               className={cn(
                 "w-full h-16 rounded-2xl font-bold uppercase tracking-[0.25em] text-[11px] flex items-center justify-center gap-3 transition-all relative overflow-hidden group shadow-2xl",
-                isReady && !isGenerating
+                isReady && !isActiveProjectBusy
                   ? "bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-500/25 hover:scale-[1.02] active:scale-[0.98]"
                   : "bg-white/5 text-zinc-600 border border-white/5 cursor-not-allowed opacity-50"
               )}
             >
-              {isGeneratingSituations ? (
+              {isAnalyzingActive ? (
                 <>
                   <RotateCcw className="w-4 h-4 animate-spin text-white/40" />
                   <span className="text-white/40 font-bold uppercase tracking-widest">Đang Phân Tích...</span>
                 </>
-              ) : isWritingShots ? (
+              ) : isWritingShotsActive ? (
                 <>
                   <RotateCcw className="w-4 h-4 animate-spin text-white/40" />
                   <span className="text-white/40 font-bold uppercase tracking-widest">Đang Tạo Prompts...</span>
@@ -6655,7 +7891,7 @@ export default function App() {
 
             {project && (
               <button
-                disabled={isGenerating}
+                disabled={isActiveProjectBusy}
                 onClick={extractAssetsAndSituations}
                 className="w-full h-12 rounded-xl border border-white/15 bg-black/40 font-bold uppercase tracking-widest text-[9px] text-zinc-400 flex items-center justify-center gap-2 hover:bg-white/10 hover:text-white transition-all group"
               >
@@ -6877,7 +8113,7 @@ export default function App() {
                   setStyleEditorTab={setStyleEditorTab}
                   scriptText={scriptText}
                   isImageGenerating={isImageGenerating}
-                  isGenerating={isGenerating}
+                  isGenerating={isActiveProjectBusy}
                   cleanApiUrl={cleanApiUrl}
                   project={project}
                   analyzeThumbnailStory={analyzeThumbnailStory}
@@ -6888,7 +8124,7 @@ export default function App() {
                   setZoomedImageUrl={setZoomedImageUrl}
                   setZoomedImageName={setZoomedImageName}
                 />
-              ) : !project && !isGenerating ? (
+              ) : !project && !isActiveProjectBusy ? (
 
                 <motion.div
                   initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.02 }}
@@ -6902,27 +8138,82 @@ export default function App() {
                     Hydrate source assets and initialize the production sequence from the sidebar.
                   </p>
                 </motion.div>
-              ) : isGenerating ? (
+              ) : isActiveProjectBusy ? (
                 <motion.div
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  className="max-w-[1700px] mx-auto space-y-16"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  className="h-[65vh] min-h-[450px] flex flex-col items-center justify-center max-w-2xl mx-auto px-4 relative"
                 >
-                  <div className="flex items-center gap-6 mb-12">
-                    <div className="w-12 h-12 bg-indigo-600/20 rounded-full flex items-center justify-center border border-indigo-500/30">
-                      <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                    </div>
-                    <div className="space-y-1">
-                      <h4 className="text-sm font-bold uppercase tracking-widest text-white font-heading">Synthesizing Scene Logic</h4>
-                      <p className="text-[10px] font-mono text-indigo-400/50 uppercase tracking-widest animate-pulse">{progress.step}</p>
-                    </div>
-                  </div>
+                  {/* Decorative glowing background elements */}
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-indigo-600/10 rounded-full blur-[80px] pointer-events-none animate-pulse" />
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-60 h-60 bg-violet-600/5 rounded-full blur-[60px] pointer-events-none animate-pulse" style={{ animationDelay: '1s' }} />
 
-                  <div className="grid grid-cols-2 gap-10 opacity-30 pointer-events-none">
-                    <div className="aspect-[16/10] bg-white/[0.02] border border-white/5 rounded-3xl overflow-hidden relative">
-                      <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/10 to-transparent" />
+                  {/* Main Glass Panel */}
+                  <div className="w-full bg-[#09090b]/80 border border-white/10 rounded-3xl p-10 shadow-2xl backdrop-blur-xl relative overflow-hidden flex flex-col items-center text-center gap-6">
+                    {/* Glowing Accent Border Line */}
+                    <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-indigo-500 to-transparent animate-shimmer" />
+
+                    {/* Animating AI Chip / Core Icon Container */}
+                    <div className="relative flex items-center justify-center w-24 h-24 mb-2">
+                      {/* Rotating Outer Rings */}
+                      <div className="absolute inset-0 border border-dashed border-indigo-500/30 rounded-full animate-[spin_20s_linear_infinite]" />
+                      <div className="absolute inset-2 border border-dashed border-violet-500/20 rounded-full animate-[spin_10s_linear_infinite_reverse]" />
+                      
+                      {/* Pulsing Glow Ring */}
+                      <div className="absolute inset-4 bg-indigo-500/10 rounded-full animate-ping" />
+                      
+                      {/* Center Core Button */}
+                      <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/30 border border-white/10 relative z-10 animate-float">
+                        <Cpu className="w-8 h-8 text-white animate-pulse" />
+                      </div>
                     </div>
-                    <div className="aspect-[16/10] bg-white/[0.02] border border-white/5 rounded-3xl overflow-hidden relative">
-                      <div className="absolute inset-0 bg-gradient-to-bl from-violet-500/10 to-transparent" />
+
+                    {/* Loading Title & Status */}
+                    <div className="space-y-2 max-w-md">
+                      <h4 className="text-lg font-black uppercase tracking-[0.25em] text-white font-heading [text-shadow:0_0_12px_rgba(255,255,255,0.1)]">
+                        {isAnalyzingActive ? "Synthesizing Scene Logic" : isWritingShotsActive ? "Generating Cinematic Prompts" : "Processing Sequences"}
+                      </h4>
+                      <p className="text-[11px] font-mono text-indigo-400 uppercase tracking-widest bg-indigo-950/30 border border-indigo-500/20 px-3.5 py-1 rounded-full w-fit mx-auto font-semibold animate-pulse">
+                        {currentStepText}
+                      </p>
+                    </div>
+
+                    {/* Progress Percentage Badge */}
+                    <div className="flex items-baseline gap-1 mt-2">
+                      <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-violet-400 font-heading">
+                        {currentPercent}
+                      </span>
+                      <span className="text-xl font-bold text-indigo-400">%</span>
+                    </div>
+
+                    {/* Progress Bar Container */}
+                    <div className="w-full space-y-2">
+                      <div className="w-full h-3 bg-zinc-900 border border-white/5 rounded-full overflow-hidden relative shadow-inner p-[2px]">
+                        {/* Animated fill */}
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${currentPercent}%` }}
+                          transition={{ duration: 0.3, ease: "easeOut" }}
+                          className="h-full bg-gradient-to-r from-indigo-500 via-indigo-400 to-violet-500 rounded-full shadow-[0_0_12px_rgba(99,102,241,0.5)] relative animate-pulse"
+                        >
+                          <div className="absolute inset-0 bg-[linear-gradient(45deg,rgba(255,255,255,0.15)_25%,transparent_25%,transparent_50%,rgba(255,255,255,0.15)_50%,rgba(255,255,255,0.15)_75%,transparent_75%,transparent)] bg-[length:16px_16px] animate-[shimmer_1s_linear_infinite]" />
+                        </motion.div>
+                      </div>
+
+                      {/* Detail text (e.g. shot current/total) */}
+                      <div className="flex justify-between items-center text-[10px] font-mono text-zinc-500 px-1">
+                        <span>
+                          {currentShotNum !== undefined && totalShotsNum !== undefined && totalShotsNum > 0 ? (
+                            <>
+                              Đang xử lý: <span className="text-indigo-400 font-semibold">{currentShotNum}</span> / {totalShotsNum} phân cảnh
+                            </>
+                          ) : (
+                            "AI Engine Active"
+                          )}
+                        </span>
+                        <span className="text-zinc-600">VEO-PRD-01 // Active</span>
+                      </div>
                     </div>
                   </div>
                 </motion.div>
@@ -6948,15 +8239,21 @@ export default function App() {
                     handleSrtChange={handleSrtChange}
                     systemLogs={systemLogs}
                     setSystemLogs={setSystemLogs}
-                    generatingVideos={generatingVideos}
+                    generatingVideos={activeGeneratingVideos}
                     generateVideo={generateVideo}
-                    isGenerating={isGenerating}
+                    isGenerating={isActiveProjectBusy}
                     selectedDirectoryHandle={selectedDirectoryHandle}
                     apiKey={apiKey}
                     selectedModel={selectedModel}
                     apiBaseUrl={apiBaseUrl}
                     setProject={setProject}
                     projectPath={folderPathInput}
+                    exportVideoType={exportVideoType}
+                    setExportVideoType={setExportVideoType}
+                    burnSubtitles={burnSubtitles}
+                    setBurnSubtitles={setBurnSubtitles}
+                    subtitleStyle={subtitleStyle}
+                    setSubtitleStyle={setSubtitleStyle}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center p-20 text-center gap-4 bg-zinc-950/20">
@@ -7016,10 +8313,10 @@ export default function App() {
                             selectedAllAssetsCount={selectedAllAssetsCount}
                             isBatchGenerating={isBatchGenerating}
                             isImageGenerating={isImageGenerating}
-                            isGenerating={isGenerating}
-                            generatingImages={generatingImages}
-                            generationStatuses={generationStatuses}
-                            generationErrors={generationErrors}
+                            isGenerating={isActiveProjectBusy}
+                            generatingImages={activeGeneratingImages}
+                            generationStatuses={activeGenerationStatuses}
+                            generationErrors={activeGenerationErrors}
                             imageSelectorTarget={imageSelectorTarget as any}
                             setImageSelectorTarget={setImageSelectorTarget as any}
                             fileUploadTarget={fileUploadTarget as any}
@@ -7057,10 +8354,10 @@ export default function App() {
                             selectedAllAssetsCount={selectedAllAssetsCount}
                             isBatchGenerating={isBatchGenerating}
                             isImageGenerating={isImageGenerating}
-                            isGenerating={isGenerating}
-                            generatingImages={generatingImages}
-                            generationStatuses={generationStatuses}
-                            generationErrors={generationErrors}
+                            isGenerating={isActiveProjectBusy}
+                            generatingImages={activeGeneratingImages}
+                            generationStatuses={activeGenerationStatuses}
+                            generationErrors={activeGenerationErrors}
                             imageSelectorTarget={imageSelectorTarget as any}
                             setImageSelectorTarget={setImageSelectorTarget as any}
                             fileUploadTarget={fileUploadTarget as any}
@@ -7098,10 +8395,10 @@ export default function App() {
                             selectedAllAssetsCount={selectedAllAssetsCount}
                             isBatchGenerating={isBatchGenerating}
                             isImageGenerating={isImageGenerating}
-                            isGenerating={isGenerating}
-                            generatingImages={generatingImages}
-                            generationStatuses={generationStatuses}
-                            generationErrors={generationErrors}
+                            isGenerating={isActiveProjectBusy}
+                            generatingImages={activeGeneratingImages}
+                            generationStatuses={activeGenerationStatuses}
+                            generationErrors={activeGenerationErrors}
                             imageSelectorTarget={imageSelectorTarget}
                             setImageSelectorTarget={setImageSelectorTarget}
                             fileUploadTarget={fileUploadTarget}
@@ -7135,16 +8432,18 @@ export default function App() {
                       project={project}
                       setProject={setProject}
                       isImageGenerating={isImageGenerating}
-                      isGenerating={isGenerating}
-                      generatingVideos={generatingVideos}
-                      generationStatuses={generationStatuses}
-                      generationErrors={generationErrors}
+                      isGenerating={isActiveProjectBusy}
+                      isAnalyzing={isAnalyzingActive}
+                      generatingVideos={activeGeneratingVideos}
+                      generationStatuses={activeGenerationStatuses}
+                      generationErrors={activeGenerationErrors}
                       activeZoomedShotIndex={activeZoomedShotIndex}
                       setActiveZoomedShotIndex={setActiveZoomedShotIndex}
                       zoomedPrompt={zoomedPrompt}
                       setZoomedPrompt={setZoomedPrompt}
                       isRefMappingApproved={isRefMappingApproved}
-                      isWritingShots={isWritingShots}
+                      isWritingShots={isWritingShotsActive}
+                      promptProgress={projectPromptProgress[activeProjectId || "default"] || null}
                       selectedShots={selectedShots}
                       setSelectedShots={setSelectedShots}
                       selectedShotsCount={selectedShotsCount}
@@ -7168,6 +8467,7 @@ export default function App() {
                       togglePropInSituation={togglePropInSituation}
                       handleAddOfficialBackground={handleAddOfficialBackground}
                       generateCinematicShots={generateCinematicShots}
+                      generatePromptsAndVideosAuto={generatePromptsAndVideosAuto}
                       handleLockAndReconfigure={handleLockAndReconfigure}
                       handleSelectAllShots={handleSelectAllShots}
                       handleRenderAllSelectedShots={handleRenderAllSelectedShots}
@@ -7429,7 +8729,7 @@ export default function App() {
                     setZoomedVideoIndex(null);
                   }
                 }}
-                disabled={isImageGenerating || isGenerating}
+                disabled={isImageGenerating || isActiveProjectBusy}
                 className="absolute bottom-4 left-4 px-4 py-2 bg-white/10 border border-white/10 text-white hover:bg-indigo-600 hover:border-indigo-400 disabled:opacity-30 disabled:cursor-not-allowed rounded-xl font-bold uppercase tracking-widest text-[10px] flex items-center gap-2 transition-colors shadow-lg cursor-pointer"
                 title="Tạo lại video này"
               >
@@ -7701,6 +9001,92 @@ export default function App() {
         accept="image/*"
         onChange={handleRefFileUploaded}
       />
+
+      {/* Custom Prompt Dialog Modal */}
+      {promptModal.isOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-[400px] shadow-2xl flex flex-col gap-4 animate-in fade-in zoom-in duration-200">
+            <div className="flex flex-col gap-1">
+              <h3 className="text-sm font-black uppercase text-white tracking-widest leading-none">
+                {promptModal.title}
+              </h3>
+              <span className="text-[10px] font-mono text-zinc-400 mt-1 block">
+                {promptModal.message}
+              </span>
+            </div>
+            
+            <input
+              type="text"
+              value={promptInputValue}
+              onChange={(e) => setPromptInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  promptModal.onConfirm(promptInputValue);
+                  setPromptModal(prev => ({ ...prev, isOpen: false }));
+                } else if (e.key === "Escape") {
+                  setPromptModal(prev => ({ ...prev, isOpen: false }));
+                }
+              }}
+              autoFocus
+              className="w-full bg-black/40 border border-white/15 rounded-xl p-3.5 text-xs text-zinc-200 outline-none focus:border-indigo-500/60 focus:bg-black/60 transition-all font-bold"
+            />
+            
+            <div className="flex items-center justify-end gap-2 mt-2">
+              <button
+                onClick={() => setPromptModal(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-[10px] font-bold uppercase transition-all cursor-pointer"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={() => {
+                  promptModal.onConfirm(promptInputValue);
+                  setPromptModal(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[10px] font-bold uppercase transition-all cursor-pointer shadow-lg shadow-indigo-600/20"
+              >
+                Xác Nhận
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirm Dialog Modal */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-[400px] shadow-2xl flex flex-col gap-4 animate-in fade-in zoom-in duration-200">
+            <div className="flex flex-col gap-1">
+              <h3 className="text-sm font-black uppercase text-white tracking-widest leading-none">
+                {confirmModal.title}
+              </h3>
+              <span className="text-[10px] font-mono text-zinc-400 mt-1 block">
+                {confirmModal.message}
+              </span>
+            </div>
+            
+            <div className="flex items-center justify-end gap-2 mt-4">
+              <button
+                onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-[10px] font-bold uppercase transition-all cursor-pointer"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(prev => ({ ...prev, isOpen: false }));
+                }}
+                className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-[10px] font-bold uppercase transition-all cursor-pointer shadow-lg shadow-red-600/20"
+              >
+                Xóa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <QueuePanel />
     </div>
   );
 }

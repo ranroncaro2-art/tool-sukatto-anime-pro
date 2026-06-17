@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { BgmSuggestion } from "../types";
+import { queueStore } from "./useQueueStore";
 
 class ProjectStore {
   private listeners = new Set<() => void>();
@@ -33,41 +34,60 @@ const callAiDirectClientSide = async (
   model: string,
   jsonMode = false
 ): Promise<string> => {
-  if (model.includes("gemini")) {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: jsonMode ? { responseMimeType: "application/json" } : undefined
-      })
+  return new Promise<string>((resolve, reject) => {
+    const activeProjId = localStorage.getItem("ai_active_project_id") || "default";
+    
+    queueStore.enqueue({
+      id: "ai_direct_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9),
+      projectId: activeProjId,
+      projectName: "Dự án",
+      type: "text",
+      label: "Sinh nội dung AI (BGM/Đạo diễn)",
+      run: async () => {
+        try {
+          let result = "";
+          if (model.includes("gemini")) {
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: jsonMode ? { responseMimeType: "application/json" } : undefined
+              })
+            });
+            if (!response.ok) {
+              throw new Error(`Gemini API error: ${response.status}`);
+            }
+            const data = await response.json();
+            result = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          } else if (model.includes("gpt")) {
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: { 
+                "Content-Type": "application/json", 
+                "Authorization": `Bearer ${apiKey}` 
+              },
+              body: JSON.stringify({
+                model: model,
+                messages: [{ role: "user", content: prompt }],
+                response_format: jsonMode ? { type: "json_object" } : undefined
+              })
+            });
+            if (!response.ok) {
+              throw new Error(`OpenAI API error: ${response.status}`);
+            }
+            const data = await response.json();
+            result = data.choices?.[0]?.message?.content || "";
+          } else {
+            throw new Error(`Unsupported model for client-side fallback: ${model}`);
+          }
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        }
+      }
     });
-    if (!response.ok) {
-      throw new Error(`Gemini API error: ${response.status}`);
-    }
-    const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  } else if (model.includes("gpt")) {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json", 
-        "Authorization": `Bearer ${apiKey}` 
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [{ role: "user", content: prompt }],
-        response_format: jsonMode ? { type: "json_object" } : undefined
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`OpenAI API error: ${response.status}`);
-    }
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "";
-  } else {
-    throw new Error(`Unsupported model for client-side fallback: ${model}`);
-  }
+  });
 };
 
 export const useProjectStore = () => {
