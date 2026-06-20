@@ -34,6 +34,44 @@ function createWindow() {
     mainWindow.loadURL('app://localhost/index.html');
   }
 
+  // Lắng nghe sự kiện sập Renderer Process
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    console.error(`[Electron] Renderer process gone. Reason: ${details.reason}, Exit code: ${details.exitCode}`);
+    if (mainWindow) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Giao diện bị sập',
+        message: 'Giao diện ứng dụng bị sập đột ngột (Crash).',
+        detail: `Lý do: ${details.reason} (Mã thoát: ${details.exitCode}). Bạn có muốn tải lại giao diện không?`,
+        buttons: ['Tải lại trang', 'Đóng'],
+        defaultId: 0
+      }).then(({ response }) => {
+        if (response === 0 && mainWindow) {
+          mainWindow.reload();
+        }
+      });
+    }
+  });
+
+  // Lắng nghe sự kiện ứng dụng không phản hồi
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('[Electron] Window became unresponsive.');
+    if (mainWindow) {
+      dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: 'Ứng dụng không phản hồi',
+        message: 'Giao diện ứng dụng đang bị đơ hoặc không phản hồi.',
+        detail: 'Bạn có muốn tải lại trang để phục hồi không?',
+        buttons: ['Tải lại', 'Chờ thêm'],
+        defaultId: 0
+      }).then(({ response }) => {
+        if (response === 0 && mainWindow) {
+          mainWindow.reload();
+        }
+      });
+    }
+  });
+
   mainWindow.on('closed', function () {
     mainWindow = null;
   });
@@ -49,11 +87,18 @@ app.on('ready', () => {
         pathname = '/index.html';
       }
       const decodedPath = decodeURIComponent(pathname);
-      const filePath = path.normalize(path.join(__dirname, '../out', decodedPath));
+      let filePath = path.normalize(path.join(__dirname, '../out', decodedPath));
+      
+      // SPA Fallback: Nếu không tìm thấy file, phục hồi bằng cách trả về index.html để React SPA xử lý định tuyến/reload
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.normalize(path.join(__dirname, '../out/index.html'));
+      }
+
       const fileUrl = pathToFileURL(filePath).href;
       return net.fetch(fileUrl);
     } catch (error) {
       console.error('Failed to handle app protocol:', error);
+      return new Response(error.message, { status: 500 });
     }
   });
 
@@ -73,10 +118,17 @@ app.on('ready', () => {
       }
       
       filePath = path.normalize(filePath);
+
+      // Kiểm tra file tồn tại trước khi fetch để tránh lỗi mạng đơ màn hình
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        return new Response('File not found', { status: 404 });
+      }
+
       const fileUrl = pathToFileURL(filePath).href;
       return net.fetch(fileUrl);
     } catch (error) {
       console.error('Failed to handle safe-file protocol:', error);
+      return new Response(error.message, { status: 500 });
     }
   });
 
@@ -89,6 +141,13 @@ app.on('window-all-closed', function () {
 
 app.on('activate', function () {
   if (mainWindow === null) createWindow();
+});
+
+// Xử lý sự kiện IPC reload ứng dụng cấp hệ thống
+ipcMain.on('reload-window', () => {
+  if (mainWindow) {
+    mainWindow.reload();
+  }
 });
 
 // Xử lý sự kiện IPC để biên dịch video
@@ -139,6 +198,12 @@ ipcMain.on('compile-video', (event, projectData, srtText, customOutputDir) => {
   event.reply('compile-log', `[System] Tham số: ${args.slice(1).join(' ')}`);
 
   const child = spawn(runner, args);
+
+  child.on('error', (err) => {
+    console.error('[Electron] Failed to start compiler process:', err);
+    event.reply('compile-log', `[FATAL] Không thể khởi chạy tiến trình kết xuất: ${err.message}`);
+    event.reply('compile-finished', -1, outputDir);
+  });
 
   let stdoutBuffer = '';
   child.stdout.on('data', (data) => {
@@ -243,21 +308,30 @@ ipcMain.handle('get-last-compile-data', async () => {
 
 // Xử lý sự kiện IPC để chọn thư mục lưu video
 ipcMain.handle('select-directory', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory']
-  });
-  if (result.canceled) {
-    return null;
-  } else {
-    const baseDir = result.filePaths[0];
-    const subDirs = ['videos', 'bgm', 'voice', 'voices', 'images', 'intro', 'outro'];
-    for (const subDir of subDirs) {
-      const fullPath = path.join(baseDir, subDir);
-      if (!fs.existsSync(fullPath)) {
-        fs.mkdirSync(fullPath, { recursive: true });
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory']
+    });
+    if (result.canceled) {
+      return null;
+    } else {
+      const baseDir = result.filePaths[0];
+      const subDirs = ['videos', 'bgm', 'voice', 'voices', 'images', 'intro', 'outro'];
+      for (const subDir of subDirs) {
+        const fullPath = path.join(baseDir, subDir);
+        try {
+          if (!fs.existsSync(fullPath)) {
+            fs.mkdirSync(fullPath, { recursive: true });
+          }
+        } catch (dirErr) {
+          console.error(`[Electron] Failed to create subdirectory ${subDir}:`, dirErr);
+        }
       }
+      return baseDir;
     }
-    return baseDir;
+  } catch (err) {
+    console.error("[Electron] Failed in select-directory:", err);
+    return null;
   }
 });
 

@@ -40,7 +40,7 @@ function findAssetFile(filesList: string[], stt: number): boolean {
 
 export async function POST(request: Request) {
   try {
-    const { project, srtText, projectPath, exportMode, style } = await request.json();
+    const { project, srtText, projectPath, exportMode, style, useGpuAcceleration } = await request.json();
 
     if (!project || !projectPath) {
       return NextResponse.json({ error: "Thiếu dữ liệu dự án hoặc đường dẫn thư mục" }, { status: 400 });
@@ -48,6 +48,10 @@ export async function POST(request: Request) {
 
     if (style) {
       project.style = style;
+    }
+
+    if (useGpuAcceleration !== undefined) {
+      project.useGpuAcceleration = useGpuAcceleration;
     }
 
     const mode = exportMode || 'mixed';

@@ -28,14 +28,57 @@ export class ErrorBoundary extends Component<Props, State> {
 
   private handleReset = () => {
     this.setState({ hasError: false, error: null, errorInfo: null });
-    window.location.reload();
+    if ((window as any).electronAPI && typeof (window as any).electronAPI.reloadWindow === 'function') {
+      (window as any).electronAPI.reloadWindow();
+    } else {
+      window.location.reload();
+    }
   };
 
   private handleClearLocalStorage = () => {
-    if (window.confirm("Bạn có chắc chắn muốn reset toàn bộ cấu hình LocalStorage? Việc này có thể giải quyết các lỗi dữ liệu lỗi.")) {
+    if (window.confirm("Bạn có chắc chắn muốn reset toàn bộ cấu hình LocalStorage? Việc này có thể giải quyết các lỗi cấu hình tạm thời.")) {
       localStorage.clear();
       this.setState({ hasError: false, error: null, errorInfo: null });
-      window.location.reload();
+      if ((window as any).electronAPI && typeof (window as any).electronAPI.reloadWindow === 'function') {
+        (window as any).electronAPI.reloadWindow();
+      } else {
+        window.location.reload();
+      }
+    }
+  };
+
+  private handleFactoryReset = () => {
+    if (window.confirm("CẢNH BÁO CỰC KỲ QUAN TRỌNG:\nHành động này sẽ xóa TOÀN BỘ dự án của bạn (lưu trong IndexedDB) cùng mọi cài đặt khác để đưa ứng dụng về trạng thái xuất xưởng ban đầu.\n\nBạn có chắc chắn muốn tiếp tục không?")) {
+      localStorage.clear();
+      sessionStorage.clear();
+      
+      const req1 = indexedDB.deleteDatabase("FolderPickerDB");
+      const req2 = indexedDB.deleteDatabase("ProjectCacheDB");
+      
+      const doReload = () => {
+        this.setState({ hasError: false, error: null, errorInfo: null });
+        if ((window as any).electronAPI && typeof (window as any).electronAPI.reloadWindow === 'function') {
+          (window as any).electronAPI.reloadWindow();
+        } else {
+          window.location.reload();
+        }
+      };
+      
+      let completed = 0;
+      const onDbDeleteComplete = () => {
+        completed++;
+        if (completed >= 2) {
+          doReload();
+        }
+      };
+      
+      req1.onsuccess = onDbDeleteComplete;
+      req1.onerror = onDbDeleteComplete;
+      req2.onsuccess = onDbDeleteComplete;
+      req2.onerror = onDbDeleteComplete;
+      
+      // Tự động tải lại sau 1.2 giây đề phòng callback không chạy
+      setTimeout(doReload, 1200);
     }
   };
 
@@ -63,21 +106,28 @@ export class ErrorBoundary extends Component<Props, State> {
             </div>
 
             <div className="p-4 bg-amber-500/5 border border-amber-500/10 rounded-xl text-xs text-zinc-400 leading-relaxed">
-              <strong>Lưu ý:</strong> Dữ liệu dự án của bạn vẫn an toàn trong database IndexedDB. Bạn có thể thử tải lại ứng dụng hoặc reset cấu hình LocalStorage để khắc phục.
+              <strong>Lưu ý:</strong> Dữ liệu dự án của bạn vẫn an toàn trong database IndexedDB. Bạn có thể thử tải lại ứng dụng, reset cấu hình tạm thời, hoặc khôi phục cài đặt gốc để sửa lỗi dữ liệu hỏng.
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-2">
+            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
                 type="button"
                 onClick={this.handleClearLocalStorage}
-                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-white/5"
+                className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-xl text-[11px] font-bold transition-all cursor-pointer border border-white/5"
               >
-                Xóa Cấu Hình Tạm (Reset Cache)
+                Reset Cache
+              </button>
+              <button
+                type="button"
+                onClick={this.handleFactoryReset}
+                className="px-3.5 py-2 bg-red-950/40 hover:bg-red-900/60 text-red-300 hover:text-red-200 border border-red-900/30 hover:border-red-700/50 rounded-xl text-[11px] font-bold transition-all cursor-pointer"
+              >
+                Khôi Phục Cài Đặt Gốc
               </button>
               <button
                 type="button"
                 onClick={this.handleReset}
-                className="px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white border border-indigo-500/20 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-lg"
+                className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white border border-indigo-500/20 rounded-xl text-[11px] font-bold transition-all cursor-pointer shadow-lg"
               >
                 Tải lại ứng dụng (Reload)
               </button>

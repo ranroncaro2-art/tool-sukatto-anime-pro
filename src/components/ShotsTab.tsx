@@ -146,6 +146,10 @@ interface ShotsTabProps {
     currentShot: number;
     totalShots: number;
     step: string;
+    tokensInput?: number;
+    tokensOutput?: number;
+    estimatedCost?: number;
+    modelUsed?: string;
   } | null;
 }
 
@@ -810,9 +814,54 @@ export const ShotsTab: React.FC<ShotsTabProps> = ({
                       <span>TIẾN TRÌNH TỰ ĐỘNG</span>
                       <span>Đã xử lý: {promptProgress?.currentShot || 0} / {promptProgress?.totalShots || 0} phân cảnh</span>
                     </div>
+                    {promptProgress?.tokensInput !== undefined && (
+                      <div className="mt-2 p-3 bg-white/[0.02] border border-white/5 rounded-xl text-[9px] font-mono text-zinc-400 flex flex-col gap-1.5">
+                        <div className="flex justify-between">
+                          <span>MÔ HÌNH SỬ DỤNG:</span>
+                          <span className="text-indigo-400 font-bold uppercase">{promptProgress.modelUsed || "gemini-2.5-flash"}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>TOKENS ĐÃ DÙNG:</span>
+                          <span className="text-white">
+                            {(promptProgress.tokensInput + (promptProgress.tokensOutput || 0)).toLocaleString()} 
+                            <span className="text-zinc-500 ml-1">
+                              (I: {promptProgress.tokensInput.toLocaleString()} | O: {promptProgress.tokensOutput?.toLocaleString()})
+                            </span>
+                          </span>
+                        </div>
+                        <div className="flex justify-between border-t border-white/5 pt-1.5 mt-1 text-emerald-400 font-bold">
+                          <span>CHI PHÍ ƯỚC TÍNH:</span>
+                          <span>${promptProgress.estimatedCost?.toFixed(5)} USD</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>
+                    {project?.tokensInput !== undefined && (
+                      <div className="w-full max-w-2xl p-4 bg-zinc-900/40 border border-white/5 rounded-2xl flex flex-col sm:flex-row gap-4 items-center justify-between shadow-lg backdrop-blur-md">
+                        <div className="flex flex-col gap-1 w-full sm:w-auto text-left">
+                          <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest font-bold">Thống kê lần tạo gần nhất</span>
+                          <div className="text-[10px] font-mono text-zinc-300">
+                            Model: <span className="text-indigo-400 font-bold uppercase">{project.modelUsed || "gemini-2.5-flash"}</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-between sm:justify-end gap-6 font-mono text-[10px] w-full sm:w-auto border-t sm:border-t-0 sm:border-l border-white/10 pt-2 sm:pt-0 sm:pl-6">
+                          <div className="flex flex-col items-start sm:items-end">
+                            <span className="text-[8px] text-zinc-500 uppercase">Input Tokens</span>
+                            <span className="text-white font-bold">{project.tokensInput.toLocaleString()}</span>
+                          </div>
+                          <div className="flex flex-col items-start sm:items-end">
+                            <span className="text-[8px] text-zinc-500 uppercase">Output Tokens</span>
+                            <span className="text-white font-bold">{project.tokensOutput?.toLocaleString()}</span>
+                          </div>
+                          <div className="flex flex-col items-start sm:items-end pl-2">
+                            <span className="text-[8px] text-emerald-400 uppercase font-bold">Chi phí ước tính</span>
+                            <span className="text-emerald-400 font-bold">${project.estimatedCost?.toFixed(5)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex flex-col md:flex-row gap-4 w-full max-w-2xl justify-center">
                       {/* Traditional Step 2 Button */}
                       <button

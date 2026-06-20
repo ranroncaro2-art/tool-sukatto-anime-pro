@@ -6,7 +6,7 @@ import {
   Settings, Eye, EyeOff, FileText, Terminal, Cpu, Plus, Trash2, Database,
   ZoomIn, Maximize2, StopCircle, PlayCircle, AlertOctagon, X,
   Sparkles, Globe, Copy, Check, Tags, Music, ChevronLeft, ChevronRight, Save,
-  Film, Clapperboard, Box, LogOut, ChevronDown
+  Film, Clapperboard, Box, LogOut, ChevronDown, Coins
 } from "lucide-react";
 import { parseSRT, parseScript, mergeShortSRTAndScript, detectCharacters } from "./utils/parsers";
 import { SRTBlock, ScriptLine, ProjectData, PromptRule } from "./types";
@@ -28,12 +28,23 @@ import { CharactersTab } from "./components/CharactersTab";
 import { BackgroundsTab } from "./components/BackgroundsTab";
 import { PropsTab } from "./components/PropsTab";
 import { ShotsTab } from "./components/ShotsTab";
+import { TokensTab, TokenUsageLog } from "./components/TokensTab";
 import { LoginScreen } from "./components/LoginScreen";
 import { useQueueStore, queueStore } from "./store/useQueueStore";
 import { QueuePanel } from "./components/QueuePanel";
 const ShotsTabAny = ShotsTab as any;
 
+export const MODEL_RATES: Record<string, { name: string; inputPrice: number; outputPrice: number }> = {
+  "gemini-2.5-flash": { name: "Gemini 2.5 Flash", inputPrice: 0.30 / 1_000_000, outputPrice: 2.50 / 1_000_000 },
+  "gemini-2.5-pro": { name: "Gemini 2.5 Pro", inputPrice: 1.25 / 1_000_000, outputPrice: 5.00 / 1_000_000 },
+  "gpt-4o-mini": { name: "GPT-4o Mini", inputPrice: 0.15 / 1_000_000, outputPrice: 0.60 / 1_000_000 },
+  "gpt-4o": { name: "GPT-4o", inputPrice: 2.50 / 1_000_000, outputPrice: 10.00 / 1_000_000 }
+};
 
+export const getEstimatedCost = (model: string, inputTokens: number, outputTokens: number): number => {
+  const rates = MODEL_RATES[model] || MODEL_RATES["gemini-2.5-flash"];
+  return (inputTokens * rates.inputPrice) + (outputTokens * rates.outputPrice);
+};
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -649,6 +660,7 @@ export interface ProjectInfo {
   exportVideoType?: 'mixed' | 'images_only' | 'videos_only';
   subtitleStyle?: any;
   burnSubtitles?: boolean;
+  useGpuAcceleration?: boolean;
 }
 
 const saveProjectToDB = async (project: ProjectInfo) => {
@@ -896,6 +908,15 @@ export default function App() {
 
   const [exportVideoType, setExportVideoType] = useState<"mixed" | "images_only" | "videos_only">("mixed");
   const [burnSubtitles, setBurnSubtitles] = useState<boolean>(true);
+  const [useGpuAcceleration, setUseGpuAcceleration] = useState<boolean>(() => {
+    const saved = localStorage.getItem("ai_use_gpu_acceleration");
+    return saved !== "false"; // Default to true
+  });
+
+  React.useEffect(() => {
+    localStorage.setItem("ai_use_gpu_acceleration", String(useGpuAcceleration));
+  }, [useGpuAcceleration]);
+
   const [subtitleStyle, setSubtitleStyle] = useState<any>(() => {
     const saved = localStorage.getItem("ai_subtitle_style");
     if (saved) {
@@ -1010,6 +1031,10 @@ export default function App() {
     currentShot: number;
     totalShots: number;
     step: string;
+    tokensInput?: number;
+    tokensOutput?: number;
+    estimatedCost?: number;
+    modelUsed?: string;
   }>>({});
 
   const updateProjectPromptProgress = (projectId: string, update: Partial<{
@@ -1019,6 +1044,10 @@ export default function App() {
     currentShot: number;
     totalShots: number;
     step: string;
+    tokensInput?: number;
+    tokensOutput?: number;
+    estimatedCost?: number;
+    modelUsed?: string;
   }>) => {
     setProjectPromptProgress(prev => {
       const current = prev[projectId] || { isAnalyzing: false, isWritingShots: false, percent: 0, currentShot: 0, totalShots: 0, step: "" };
@@ -1026,6 +1055,27 @@ export default function App() {
         ...prev,
         [projectId]: { ...current, ...update }
       };
+    });
+  };
+
+  const [tokenLogs, setTokenLogs] = useState<TokenUsageLog[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ai_token_usage_logs") || "[]");
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const addTokenLog = (log: Omit<TokenUsageLog, "id" | "timestamp">) => {
+    const newLog: TokenUsageLog = {
+      ...log,
+      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      timestamp: new Date().toISOString()
+    };
+    setTokenLogs(prev => {
+      const updated = [newLog, ...prev];
+      localStorage.setItem("ai_token_usage_logs", JSON.stringify(updated));
+      return updated;
     });
   };
 
@@ -1085,6 +1135,7 @@ export default function App() {
     setExportVideoType(target.exportVideoType || "mixed");
     setSubtitleStyle(target.subtitleStyle || DEFAULT_SUBTITLE_STYLE);
     setBurnSubtitles(target.burnSubtitles !== false);
+    setUseGpuAcceleration(target.useGpuAcceleration !== false);
 
     // Reset selection lists
     setSelectedCharacters({});
@@ -1132,6 +1183,7 @@ export default function App() {
       apiBaseUrl: apiBaseUrl,
       exportVideoType: "mixed",
       burnSubtitles: burnSubtitles,
+      useGpuAcceleration: useGpuAcceleration,
       subtitleStyle: subtitleStyle || DEFAULT_SUBTITLE_STYLE
     };
 
@@ -1219,7 +1271,7 @@ export default function App() {
 
 
   const [logsError, setLogsError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'reference_images' | 'characters' | 'backgrounds' | 'props' | 'shots' | 'logs' | 'thumb' | 'seo' | 'cinema'>(() => {
+  const [activeTab, setActiveTab] = useState<'reference_images' | 'characters' | 'backgrounds' | 'props' | 'shots' | 'logs' | 'thumb' | 'seo' | 'cinema' | 'tokens'>(() => {
     const saved = localStorage.getItem("ai_active_tab");
     if (saved === 'characters' || saved === 'backgrounds' || saved === 'props') {
       return 'reference_images';
@@ -1937,6 +1989,7 @@ export default function App() {
         exportVideoType: exportVideoType,
         subtitleStyle: subtitleStyle,
         burnSubtitles: burnSubtitles,
+        useGpuAcceleration: useGpuAcceleration,
         updatedAt: new Date().toISOString()
       };
 
@@ -1954,6 +2007,7 @@ export default function App() {
     exportVideoType,
     subtitleStyle,
     burnSubtitles,
+    useGpuAcceleration,
     activeProjectId,
     projects
   ]);
@@ -1988,7 +2042,8 @@ export default function App() {
             apiBaseUrl: localStorage.getItem("ai_api_base_url") || "http://127.0.0.1:5000",
             exportVideoType: (localStorage.getItem("ai_export_video_type") as any) || "mixed",
             subtitleStyle: localStorage.getItem("ai_styles_config") ? JSON.parse(localStorage.getItem("ai_styles_config")!)[0] : DEFAULT_SUBTITLE_STYLE,
-            burnSubtitles: localStorage.getItem("ai_burn_subtitles") !== "false"
+            burnSubtitles: localStorage.getItem("ai_burn_subtitles") !== "false",
+            useGpuAcceleration: localStorage.getItem("ai_use_gpu_acceleration") !== "false"
           };
 
           await saveProjectToDB(defaultProj);
@@ -2020,6 +2075,7 @@ export default function App() {
             apiBaseUrl: "http://127.0.0.1:5000",
             exportVideoType: "mixed",
             burnSubtitles: true,
+            useGpuAcceleration: true,
             subtitleStyle: DEFAULT_SUBTITLE_STYLE
           };
           await saveProjectToDB(defaultProj);
@@ -2050,6 +2106,7 @@ export default function App() {
         setExportVideoType(targetProj.exportVideoType || "mixed");
         setSubtitleStyle(targetProj.subtitleStyle || DEFAULT_SUBTITLE_STYLE);
         setBurnSubtitles(targetProj.burnSubtitles !== false);
+        setUseGpuAcceleration(targetProj.useGpuAcceleration !== false);
 
         setTimeout(() => {
           isSwitchingRef.current = false;
@@ -2712,11 +2769,25 @@ export default function App() {
         });
       }
 
+      const cost = getEstimatedCost(selectedModel, tokenUsage.prompt, tokenUsage.completion);
+      finalProject.tokensInput = tokenUsage.prompt;
+      finalProject.tokensOutput = tokenUsage.completion;
+      finalProject.estimatedCost = cost;
+      finalProject.modelUsed = selectedModel;
+
       if (tokenUsage.total > 0) {
         setSystemLogs(prev => [
           ...prev,
           `[${new Date().toLocaleTimeString()}] 📊 [Token Usage - Bóc Tách] Model: ${selectedModel} | Input: ${tokenUsage.prompt} tokens | Output: ${tokenUsage.completion} tokens | Tổng: ${tokenUsage.total} tokens`
         ]);
+        addTokenLog({
+          projectId: projId,
+          projectName: projects.find(p => p.id === projId)?.name || "Kịch bản",
+          model: selectedModel,
+          inputTokens: tokenUsage.prompt,
+          outputTokens: tokenUsage.completion,
+          cost: cost
+        });
       } else {
         setSystemLogs(prev => [
           ...prev,
@@ -2724,7 +2795,14 @@ export default function App() {
         ]);
       }
 
-      updateProjectPromptProgress(projId, { step: "Asset & Situation Extraction Complete!", percent: 100 });
+      updateProjectPromptProgress(projId, { 
+        step: "Asset & Situation Extraction Complete!", 
+        percent: 100,
+        tokensInput: tokenUsage.prompt,
+        tokensOutput: tokenUsage.completion,
+        estimatedCost: cost,
+        modelUsed: selectedModel
+      });
       await new Promise(r => setTimeout(r, 500));
       
       if (projId === activeProjectId) {
@@ -2986,7 +3064,11 @@ export default function App() {
             step: `Generating Cinematic Prompts (Stage 2)...`,
             percent: 10 + Math.floor((completedChunks / totalChunks) * 85),
             currentShot: Math.min(completedChunks * chunkSize, totalLines),
-            totalShots: totalLines
+            totalShots: totalLines,
+            tokensInput: totalTokenUsage.prompt,
+            tokensOutput: totalTokenUsage.completion,
+            estimatedCost: getEstimatedCost(selectedModel, totalTokenUsage.prompt, totalTokenUsage.completion),
+            modelUsed: selectedModel
           });
         }
       };
@@ -3003,19 +3085,41 @@ export default function App() {
       // Clean/filter results to make sure no gaps
       const cleanShots = finalShots.filter(Boolean);
 
+      const cost = getEstimatedCost(selectedModel, totalTokenUsage.prompt, totalTokenUsage.completion);
+      const updatedProject: ProjectData = {
+        ...project,
+        shots: cleanShots,
+        tokensInput: totalTokenUsage.prompt,
+        tokensOutput: totalTokenUsage.completion,
+        estimatedCost: cost,
+        modelUsed: selectedModel
+      };
+
       if (totalTokenUsage.total > 0) {
         setSystemLogs(prev => [
           ...prev,
           `[${new Date().toLocaleTimeString()}] 📊 ✅ [Tổng Token Usage - Viết Prompts] Model: ${selectedModel} | Tổng Input: ${totalTokenUsage.prompt} tokens | Tổng Output: ${totalTokenUsage.completion} tokens | Tổng cộng: ${totalTokenUsage.total} tokens`
         ]);
+        addTokenLog({
+          projectId: projId,
+          projectName: projects.find(p => p.id === projId)?.name || "Kịch bản",
+          model: selectedModel,
+          inputTokens: totalTokenUsage.prompt,
+          outputTokens: totalTokenUsage.completion,
+          cost: cost
+        });
       }
 
-      const updatedProject: ProjectData = {
-        ...project,
-        shots: cleanShots
-      };
-
-      updateProjectPromptProgress(projId, { step: "Finalizing Production Package...", percent: 100, currentShot: totalLines, totalShots: totalLines });
+      updateProjectPromptProgress(projId, { 
+        step: "Finalizing Production Package...", 
+        percent: 100, 
+        currentShot: totalLines, 
+        totalShots: totalLines,
+        tokensInput: totalTokenUsage.prompt,
+        tokensOutput: totalTokenUsage.completion,
+        estimatedCost: cost,
+        modelUsed: selectedModel
+      });
       await new Promise(r => setTimeout(r, 500));
       
       if (projId === activeProjectId) {
@@ -3232,12 +3336,20 @@ export default function App() {
           for (let idx = 0; idx < result.styledShots.length; idx++) {
             finalShots[task.i + idx] = result.styledShots[idx];
           }
+          totalTokenUsage.prompt += result.tokenUsage.prompt;
+          totalTokenUsage.completion += result.tokenUsage.completion;
+          totalTokenUsage.total += result.tokenUsage.total;
+          
           completedChunks++;
           updateProjectPromptProgress(projId, {
             step: `Tự động tạo Prompts Shots (Stage 2)...`,
             percent: 5 + Math.floor((completedChunks / totalChunks) * 45),
             currentShot: Math.min(completedChunks * chunkSize, totalLines),
-            totalShots: totalLines
+            totalShots: totalLines,
+            tokensInput: totalTokenUsage.prompt,
+            tokensOutput: totalTokenUsage.completion,
+            estimatedCost: getEstimatedCost(selectedModel, totalTokenUsage.prompt, totalTokenUsage.completion),
+            modelUsed: selectedModel
           });
         }
       };
@@ -3250,10 +3362,26 @@ export default function App() {
       await Promise.all(workers);
 
       const cleanShots = finalShots.filter(Boolean);
+      const cost = getEstimatedCost(selectedModel, totalTokenUsage.prompt, totalTokenUsage.completion);
       const updatedProject: ProjectData = {
         ...project,
-        shots: cleanShots
+        shots: cleanShots,
+        tokensInput: totalTokenUsage.prompt,
+        tokensOutput: totalTokenUsage.completion,
+        estimatedCost: cost,
+        modelUsed: selectedModel
       };
+
+      if (totalTokenUsage.total > 0) {
+        addTokenLog({
+          projectId: projId,
+          projectName: projects.find(p => p.id === projId)?.name || "Kịch bản (Auto)",
+          model: selectedModel,
+          inputTokens: totalTokenUsage.prompt,
+          outputTokens: totalTokenUsage.completion,
+          cost: cost
+        });
+      }
 
       if (projId === activeProjectId) {
         projectRef.current = updatedProject;
@@ -3281,7 +3409,11 @@ export default function App() {
         updateProjectPromptProgress(projId, {
           isWritingShots: false,
           step: "Đang xếp hàng tạo video tự động...",
-          percent: 60
+          percent: 60,
+          tokensInput: totalTokenUsage.prompt,
+          tokensOutput: totalTokenUsage.completion,
+          estimatedCost: cost,
+          modelUsed: selectedModel
         });
 
         // 3. Immediately launch video generation batch for all shots
@@ -3442,6 +3574,7 @@ export default function App() {
     try {
       const prompt = generateThumbnailAnalysisPrompt(thumbStoryInput, thumbTitlesInput);
       let resText = "";
+      let tokenUsage = { prompt: 0, completion: 0 };
       const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
 
       await new Promise<void>((resolve, reject) => {
@@ -3469,6 +3602,10 @@ export default function App() {
                   }
                 });
                 resText = getResponseText(res);
+                if (res.usageMetadata) {
+                  tokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
+                  tokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
+                }
               } else {
                 const res = await fetch("https://api.openai.com/v1/chat/completions", {
                   method: "POST",
@@ -3481,6 +3618,10 @@ export default function App() {
                 });
                 const data = await res.json();
                 resText = data.choices[0].message.content;
+                if (data.usage) {
+                  tokenUsage.prompt = data.usage.prompt_tokens || 0;
+                  tokenUsage.completion = data.usage.completion_tokens || 0;
+                }
               }
               resolve();
             } catch (err) {
@@ -3490,6 +3631,17 @@ export default function App() {
         });
       });
       
+      if (tokenUsage.prompt > 0 || tokenUsage.completion > 0) {
+        addTokenLog({
+          projectId: activeProjectId || "default",
+          projectName: currentProjName + " (Thumbnail)",
+          model: selectedModel,
+          inputTokens: tokenUsage.prompt,
+          outputTokens: tokenUsage.completion,
+          cost: getEstimatedCost(selectedModel, tokenUsage.prompt, tokenUsage.completion)
+        });
+      }
+
       const extractedData = safeJsonParse(resText, "Không thể phân tích dữ liệu JSON trả về từ AI. Hãy thử phân tích lại.");
       setThumbData(extractedData);
       
@@ -3537,6 +3689,7 @@ export default function App() {
     try {
       const prompt = generateSEOPrompt(seoSrtInput1);
       let resText = "";
+      let tokenUsage = { prompt: 0, completion: 0 };
       const currentProjName = projects.find(p => p.id === activeProjectId)?.name || "Dự án";
 
       await new Promise<void>((resolve, reject) => {
@@ -3564,6 +3717,10 @@ export default function App() {
                   }
                 });
                 resText = getResponseText(res);
+                if (res.usageMetadata) {
+                  tokenUsage.prompt = res.usageMetadata.promptTokenCount || 0;
+                  tokenUsage.completion = res.usageMetadata.candidatesTokenCount || 0;
+                }
               } else {
                 const res = await fetch("https://api.openai.com/v1/chat/completions", {
                   method: "POST",
@@ -3576,6 +3733,10 @@ export default function App() {
                 });
                 const data = await res.json();
                 resText = data.choices[0].message.content;
+                if (data.usage) {
+                  tokenUsage.prompt = data.usage.prompt_tokens || 0;
+                  tokenUsage.completion = data.usage.completion_tokens || 0;
+                }
               }
               resolve();
             } catch (err) {
@@ -3584,6 +3745,17 @@ export default function App() {
           }
         });
       });
+
+      if (tokenUsage.prompt > 0 || tokenUsage.completion > 0) {
+        addTokenLog({
+          projectId: activeProjectId || "default",
+          projectName: currentProjName + " (SEO)",
+          model: selectedModel,
+          inputTokens: tokenUsage.prompt,
+          outputTokens: tokenUsage.completion,
+          cost: getEstimatedCost(selectedModel, tokenUsage.prompt, tokenUsage.completion)
+        });
+      }
 
       const parsed = safeJsonParse(resText, "Không thể phân tích dữ liệu JSON trả về từ AI. Hãy thử tạo lại.");
       if (parsed && (parsed.section1 || parsed.section2 || parsed.bgm_music_prompts)) {
@@ -7930,6 +8102,7 @@ export default function App() {
               { id: 'cinema', label: 'Rạp Chiếu Phim', icon: Film },
               { id: 'thumb', label: 'Thiết Kế Thumb', icon: Sparkles },
               { id: 'seo', label: 'Tối Ưu SEO', icon: Globe },
+              { id: 'tokens', label: 'Thống Kê Chi Phí', icon: Coins },
               { id: 'logs', label: 'Nhật Ký Hệ Thống', icon: Terminal }
             ].map((tab) => (
               <button
@@ -8231,6 +8404,11 @@ export default function App() {
                   downloadSEOFile={downloadSEOFile}
                   downloadBgmFile={downloadBgmFile}
                 />
+              ) : activeTab === 'tokens' ? (
+                <TokensTab
+                  tokenLogs={tokenLogs}
+                  setTokenLogs={setTokenLogs}
+                />
               ) : activeTab === 'cinema' ? (
                 project ? (
                   <CinemaTab
@@ -8254,6 +8432,8 @@ export default function App() {
                     setBurnSubtitles={setBurnSubtitles}
                     subtitleStyle={subtitleStyle}
                     setSubtitleStyle={setSubtitleStyle}
+                    useGpuAcceleration={useGpuAcceleration}
+                    setUseGpuAcceleration={setUseGpuAcceleration}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center p-20 text-center gap-4 bg-zinc-950/20">

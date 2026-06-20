@@ -25,5 +25,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (pathStr) => ipcRenderer.invoke('open-path', pathStr),
   listFiles: (dirPath) => ipcRenderer.invoke('list-files-in-dir', dirPath),
   saveFile: (args) => ipcRenderer.invoke('save-file', args),
-  listFonts: () => ipcRenderer.invoke('list-fonts')
+  listFonts: () => ipcRenderer.invoke('list-fonts'),
+  reloadWindow: () => ipcRenderer.send('reload-window')
 });

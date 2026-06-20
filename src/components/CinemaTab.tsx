@@ -36,6 +36,8 @@ interface CinemaTabProps {
   setBurnSubtitles: React.Dispatch<React.SetStateAction<boolean>>;
   subtitleStyle: any;
   setSubtitleStyle: React.Dispatch<React.SetStateAction<any>>;
+  useGpuAcceleration: boolean;
+  setUseGpuAcceleration: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 const parseTimeToSeconds = (timeStr: string): number => {
@@ -194,7 +196,9 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
   burnSubtitles,
   setBurnSubtitles,
   subtitleStyle,
-  setSubtitleStyle
+  setSubtitleStyle,
+  useGpuAcceleration,
+  setUseGpuAcceleration
 }) => {
   const safeSubtitleStyle = subtitleStyle || {
     fontFamily: "sans-serif",
@@ -632,6 +636,18 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
           URL.revokeObjectURL(url);
         }
       });
+      
+      // Stop programmatic audio playback to avoid leaking sound to other tabs on unmount
+      if (voiceAudioRef.current) {
+        try {
+          voiceAudioRef.current.pause();
+        } catch (e) {}
+      }
+      if (bgmAudioRef.current) {
+        try {
+          bgmAudioRef.current.pause();
+        } catch (e) {}
+      }
     };
   }, [voiceBlobUrls, bgmBlobUrls]);
 
@@ -1688,6 +1704,7 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 };
               }
               projectCopy.exportMode = exportVideoType;
+              projectCopy.useGpuAcceleration = useGpuAcceleration;
 
               api.compileVideo(projectCopy, reconstructedSrt, outputDir);
             } catch (err: any) {
@@ -1710,7 +1727,8 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                   style: {
                     ...safeSubtitleStyle,
                     burnSubtitles
-                  }
+                  },
+                  useGpuAcceleration
                 })
               }).then(async res => {
                 if (!res.ok) {
@@ -3117,6 +3135,19 @@ export const CinemaTab: React.FC<CinemaTabProps> = ({
                 <div className="flex flex-col">
                   <span className="text-xs font-bold text-white leading-none">Gắn cứng phụ đề (Burn Subtitles)</span>
                   <span className="text-[9px] text-zinc-500 font-mono mt-1">Vẽ trực tiếp phụ đề lên khung hình video đầu ra.</span>
+                </div>
+              </label>
+
+              <label className="flex items-center gap-2.5 bg-black/20 hover:bg-black/30 border border-white/5 hover:border-white/10 rounded-xl p-3.5 cursor-pointer select-none transition-colors">
+                <input
+                  type="checkbox"
+                  checked={useGpuAcceleration}
+                  onChange={(e) => setUseGpuAcceleration(e.target.checked)}
+                  className="rounded border-zinc-700 text-indigo-600 focus:ring-indigo-500 w-4 h-4 bg-zinc-950 accent-indigo-500 cursor-pointer"
+                />
+                <div className="flex flex-col">
+                  <span className="text-xs font-bold text-white leading-none">Tăng tốc phần cứng GPU (GPU Acceleration)</span>
+                  <span className="text-[9px] text-zinc-500 font-mono mt-1">Sử dụng NVIDIA NVENC để tăng tốc xuất phim. Tắt tùy chọn này nếu gặp sự cố sập màn hình.</span>
                 </div>
               </label>
 

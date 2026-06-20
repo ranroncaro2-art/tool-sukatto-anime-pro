@@ -224,6 +224,13 @@ If the screenplay contains a conflict, argument, or emotional pressure between c
   - Angle_2 (Opposing Character Side): Suffix must be "_Antagonist" (e.g., KateiSaibansho_Lobby_Day_1_Antagonist). This describes the physical space behind the opposing character's position. Focus on domestic, oppressive, or closed elements (e.g., heavy sofa, television, shut doors, or cluttered kitchen cabinets).
 - NEVER output only a single generic location if a conflict exists. Always output BOTH _Protagonist and _Antagonist variants for the same bối cảnh.
 
+5. PHONE CALL BACKGROUND COVERAGE (CRITICAL)
+If the screenplay features a phone call (cảnh gọi điện thoại) between two characters:
+- You MUST extract distinct background locations for BOTH sides of the call.
+- Even if the location of the other character (the receiver/Character B) is not explicitly described in the script, you MUST infer a logical and realistic location (e.g., "Office_Day_1_Antagonist" or "Bedroom_Night_2_Antagonist") matching B's role, and list it in the "backgrounds" list.
+- Ensure that the "situations" list uses both backgrounds in its "backgroundNames" field.
+- This ensures that both characters have appropriate, high-quality background plates generated for their respective shots.
+
 ⚠️ CRITICAL: ZERO CHARACTER REFERENCE IN BACKGROUND PLATE DESCRIPTIONS
 - All background descriptions (both the "angle" and "prompt" fields of backgrounds) MUST describe ONLY empty spaces, walls, furniture, windows, and environment.
 - ABSOLUTELY FORBIDDEN to include characters, names of characters (e.g., "Shiori", "Kenta"), or camera descriptions referring to characters (e.g., "behind protagonist", "facing antagonist", "over-the-shoulder shot", "OTS", "POV of Shiori").
@@ -555,6 +562,15 @@ You MUST map the "scene" field of each shot to the correct faction's background 
 - The description in "prompt" must match this camera perspective.
 
 ============================================================================
+🧠 PHONE CALL SCENE INTERLEAVING & CONTINUITY (CRITICAL)
+============================================================================
+
+When characters are having a phone call (cảnh gọi điện thoại):
+- Do NOT show only one person speaking. You MUST alternate shots (interleave) back and forth between the caller (Character A) and the receiver (Character B) to capture both sides of the conversation.
+- Even if the script does not state where Character B is, you MUST infer B's logical location based on their role, personality, or storyline context (e.g., a quiet office room, a bedroom, etc.), and use B's corresponding faction background in B's shots.
+- Show their respective expressions, micro-behaviors, gestures, and environments to tell the story of the phone call from both sides.
+- Switch the "character" and "scene" fields in consecutive shots to reflect this alternating rhythm.
+
 ============================================================================
 🧠 SHOT COVERAGE RHYTHM & OTS DIVERSITY
 ============================================================================

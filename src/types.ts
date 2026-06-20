@@ -100,6 +100,10 @@ export interface ProjectData {
   hiddenSrtIndexes?: string[];
   useAiDirector?: boolean;
   hooks?: string[];
+  tokensInput?: number;
+  tokensOutput?: number;
+  estimatedCost?: number;
+  modelUsed?: string;
 }
 
 export interface PromptRule {

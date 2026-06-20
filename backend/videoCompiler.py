@@ -672,61 +672,69 @@ def create_subtitle_overlay(width, height, text, font_size=24, font_family='sans
 
 def create_ken_burns_video(image_path, duration, output_path, width=1280, height=720, fps=24):
     log(f"Generating Ken Burns clip: {image_path} ({duration:.1f}s)")
+    out = None
     try:
-        img_pil = Image.open(image_path)
-    except Exception as e:
-        log(f"[Warning] Failed to load image {image_path}: {e}. Creating placeholder frame.")
-        img_pil = Image.new('RGB', (width, height), color=(0, 0, 0))
+        try:
+            img_pil = Image.open(image_path)
+        except Exception as e:
+            log(f"[Warning] Failed to load image {image_path}: {e}. Creating placeholder frame.")
+            img_pil = Image.new('RGB', (width, height), color=(0, 0, 0))
 
-    img_w, img_h = img_pil.size
-    total_frames = int(duration * fps)
+        img_w, img_h = img_pil.size
+        total_frames = int(duration * fps)
 
-    # Crop to match target aspect ratio
-    target_ratio = width / height
-    current_ratio = img_w / img_h
-    
-    if current_ratio > target_ratio:
-        new_w = int(img_h * target_ratio)
-        offset_x = (img_w - new_w) // 2
-        img_cropped = img_pil.crop((offset_x, 0, offset_x + new_w, img_h))
-    else:
-        new_h = int(img_w / target_ratio)
-        offset_y = (img_h - new_h) // 2
-        img_cropped = img_pil.crop((0, offset_y, img_w, offset_y + new_h))
+        # Crop to match target aspect ratio
+        target_ratio = width / height
+        current_ratio = img_w / img_h
         
-    cropped_w, cropped_h = img_cropped.size
-    
-    # Convert cropped PIL image to numpy BGR once to avoid converting every frame
-    img_np = cv2.cvtColor(np.array(img_cropped), cv2.COLOR_RGB2BGR)
-    
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if current_ratio > target_ratio:
+            new_w = int(img_h * target_ratio)
+            offset_x = (img_w - new_w) // 2
+            img_cropped = img_pil.crop((offset_x, 0, offset_x + new_w, img_h))
+        else:
+            new_h = int(img_w / target_ratio)
+            offset_y = (img_h - new_h) // 2
+            img_cropped = img_pil.crop((0, offset_y, img_w, offset_y + new_h))
+            
+        cropped_w, cropped_h = img_cropped.size
+        
+        # Convert cropped PIL image to numpy BGR once to avoid converting every frame
+        img_np = cv2.cvtColor(np.array(img_cropped), cv2.COLOR_RGB2BGR)
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-    # Zoom-in: 1.0 to 1.05
-    for i in range(total_frames):
-        t = i / float(total_frames - 1) if total_frames > 1 else 0
-        zoom_factor = 1.0 + 0.05 * t
-        scale = 1.0 / zoom_factor
-        
-        w = int(cropped_w * scale)
-        h = int(cropped_h * scale)
-        
-        x1 = (cropped_w - w) // 2
-        y1 = (cropped_h - h) // 2
-        x2 = x1 + w
-        y2 = y1 + h
-        
-        # Crop using numpy slicing
-        crop = img_np[y1:y2, x1:x2]
-        
-        # Resize using OpenCV (extremely fast, multi-threaded/SIMD vectorized)
-        frame_cv = cv2.resize(crop, (width, height), interpolation=cv2.INTER_LINEAR)
-        out.write(frame_cv)
-
-    out.release()
+        # Zoom-in: 1.0 to 1.05
+        for i in range(total_frames):
+            t = i / float(total_frames - 1) if total_frames > 1 else 0
+            zoom_factor = 1.0 + 0.05 * t
+            scale = 1.0 / zoom_factor
+            
+            w = int(cropped_w * scale)
+            h = int(cropped_h * scale)
+            
+            x1 = (cropped_w - w) // 2
+            y1 = (cropped_h - h) // 2
+            x2 = x1 + w
+            y2 = y1 + h
+            
+            # Crop using numpy slicing
+            crop = img_np[y1:y2, x1:x2]
+            
+            # Resize using OpenCV (extremely fast, multi-threaded/SIMD vectorized)
+            frame_cv = cv2.resize(crop, (width, height), interpolation=cv2.INTER_LINEAR)
+            out.write(frame_cv)
+    finally:
+        if out is not None:
+            try:
+                out.release()
+            except Exception:
+                pass
 
 def process_video_clip(video_path, target_duration, output_path, width=1280, height=720, fps=24):
     log(f"Processing video clip: {video_path} (target duration: {target_duration:.1f}s)")
+    cap = None
+    out = None
     try:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -751,8 +759,6 @@ def process_video_clip(video_path, target_duration, output_path, width=1280, hei
                     out.write(last_frame)
                 else:
                     raise Exception("Empty video clip or read failure")
-            out.release()
-            cap.release()
             return True
         else:
             # Interpolation speed stretch: O(1) memory
@@ -793,12 +799,21 @@ def process_video_clip(video_path, target_duration, output_path, width=1280, hei
                     out.write(current_frame)
                 else:
                     raise Exception("Empty video clip or read failure")
-            out.release()
-            cap.release()
             return True
     except Exception as e:
         log(f"[Error] process_video_clip failed: {e}")
         return False
+    finally:
+        if out is not None:
+            try:
+                out.release()
+            except Exception:
+                pass
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
 
 def parse_srt_content(content):
     blocks = []
@@ -992,6 +1007,7 @@ def compile_project(config_path, srt_path, output_dir):
         log(f"[AI Director] Enabled. Active hidden SRT indexes: {hidden_srt_indexes}")
     export_mode = project.get('exportMode', 'mixed')
     burn_subtitles = project.get('style', {}).get('burnSubtitles', True)
+    use_gpu_config = project.get('useGpuAcceleration', True)
 
     subtitle_style = project.get('style', {})
     font_size = subtitle_style.get('fontSize', 24)
@@ -1734,12 +1750,12 @@ def compile_project(config_path, srt_path, output_dir):
         if not burn_subtitles:
             log("burnSubtitles is False. Skipping subtitle rendering. Merging directly...")
             # Check for NVIDIA NVENC hardware acceleration support
-            use_nvenc = check_nvenc(ffmpeg_path)
+            use_nvenc = check_nvenc(ffmpeg_path) if use_gpu_config else False
             if use_nvenc:
                 log("GPU Hardware Acceleration (h264_nvenc) is available. Using GPU for final compilation.")
                 v_codec = ['-c:v', 'h264_nvenc']
             else:
-                log("GPU acceleration not available or failed testing. Using CPU encoding with optimized fast preset.")
+                log("GPU acceleration disabled or not available. Using CPU encoding with optimized fast preset.")
                 v_codec = ['-c:v', 'libx264', '-preset', 'veryfast']
 
             merge_cmd = [ffmpeg_path, '-y', '-i', concat_video_path]
@@ -1769,12 +1785,12 @@ def compile_project(config_path, srt_path, output_dir):
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             # Check for NVIDIA NVENC hardware acceleration support
-            use_nvenc = check_nvenc(ffmpeg_path)
+            use_nvenc = check_nvenc(ffmpeg_path) if use_gpu_config else False
             if use_nvenc:
                 log("GPU Hardware Acceleration (h264_nvenc) is available. Using GPU for final compilation.")
                 v_codec = ['-c:v', 'h264_nvenc']
             else:
-                log("GPU acceleration not available or failed testing. Using CPU encoding with optimized fast preset.")
+                log("GPU acceleration disabled or not available. Using CPU encoding with optimized fast preset.")
                 v_codec = ['-c:v', 'libx264', '-preset', 'veryfast']
                 
             # Build FFmpeg command for piped input
